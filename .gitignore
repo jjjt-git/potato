@@ -23,3 +23,5 @@ develop/
 *.pb
 xsim.dir/
 
+# ghdl stuff
+ghdl_work

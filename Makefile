@@ -34,7 +34,7 @@ TESTBENCHES := \
 	testbenches/tb_soc.vhd \
 	soc/pp_soc_memory.vhd
 
-TOOLCHAIN_PREFIX ?= riscv32-unknown-elf
+TOOLCHAIN_PREFIX ?= riscv-unknown-elf
 
 # ISA tests to use from the riscv-tests repository:
 RISCV_TESTS += \
@@ -80,10 +80,12 @@ LOCAL_TESTS += \
 	csr_hazard
 
 # Compiler flags to use when building tests:
-TARGET_CFLAGS += -march=rv32i_zicsr -Wall -O0
+TARGET_CFLAGS += -march=rv32i_zicsr -Wall -O0 -mabi=ilp32
 TARGET_LDFLAGS +=
 
-all: potato.prj run-tests run-soc-tests
+GHDL_OPTS := --workdir=ghdl_work --std=08 -Wall
+
+all: potato.prj run-tests-ghdl run-soc-tests-ghdl
 
 potato.prj:
 	-$(RM) potato.prj
@@ -126,11 +128,38 @@ run-soc-tests: potato.prj compile-tests
 		cat tests-build/$$test.results-soc | awk '/Note:/ {print}' | sed 's/Note://' | awk '/Success|Failure/ {print}'; \
 	done
 
+ghdl-import: | ghdl_work
+	ghdl -i $(GHDL_OPTS) $(SOURCE_FILES) $(TESTBENCHES)
+
+run-tests-ghdl: potato.prj compile-tests ghdl-import | ghdl_work
+	ghdl -m $(GHDL_OPTS) tb_processor
+	for test in $(RISCV_TESTS) $(LOCAL_TESTS); do \
+		echo -ne "Running test $$test:\t"; \
+		DMEM_FILENAME="empty_dmem.hex"; \
+		test -f test-build/$$test-dmem.hex && DMEM_FILENAME="tests-build/$$test-dmem.hex"; \
+		ghdl -r $(GHDL_OPTS) tb_processor -gDMEM_FILENAME=$$DMEM_FILENAME -gIMEM_FILENAME=tests-build/$$test-imem.hex; \
+	done
+
+run-soc-tests-ghdl: potato.prj compile-tests ghdl-import | ghdl_work
+	ghdl -m $(GHDL_OPTS) tb_soc
+	for test in $(RISCV_TESTS) $(LOCAL_TESTS); do \
+		echo -ne "Running SOC test $$test:\t"; \
+		DMEM_FILENAME="empty_dmem.hex"; \
+		test -f test-build/$$test-dmem.hex && DMEM_FILENAME="tests-build/$$test-dmem.hex"; \
+		ghdl -r $(GHDL_OPTS) tb_soc -gDMEM_FILENAME=$$DMEM_FILENAME -gIMEM_FILENAME=tests-build/$$test-imem.hex; \
+	done
+
 remove-xilinx-garbage:
 	-$(RM) -r xsim.dir 
 	-$(RM) xelab.* webtalk* xsim*
 
-clean: remove-xilinx-garbage
+remove-ghdl-stuff:
+	-$(RM) -r ghdl_work
+
+ghdl_work:
+	mkdir -p $@
+
+clean: remove-xilinx-garbage remove-ghdl-stuff
 	for test in $(RISCV_TESTS); do $(RM) tests/$$test.S; done
 	-$(RM) -r tests-build
 	-$(RM) potato.prj
