@@ -17,7 +17,12 @@ entity pp_potato is
 		MTIME_DIVIDER          : positive                      := 5;           --! Divider for the clock driving the MTIME counter.
 		ICACHE_ENABLE          : boolean                       := true;        --! Whether to enable the instruction cache.
 		ICACHE_LINE_SIZE       : natural                       := 4;           --! Number of words per instruction cache line.
-		ICACHE_NUM_LINES       : natural                       := 128          --! Number of cache lines in the instruction cache.
+		ICACHE_NUM_LINES       : natural                       := 128;         --! Number of cache lines in the instruction cache.
+		DCACHE_ENABLE          : boolean                       := true;        --! Whether to enable the data cache.
+		DCACHE_REGION_BASE     : std_logic_vector(31 downto 0) := x"00000000"; --! The base address of the cached region.
+		DCACHE_REGION_LD_LEN   : natural                       := 20;          --! The binary logarithm of the size of the cached region, i.e. the length of the address-offset.
+		DCACHE_MAX_LINE_SIZE   : natural                       := 8;           --! Maximum number of words per data cache line.
+		DCACHE_NUM_LINES       : natural                       := 128          --! Number of cache lines in the data cache.
 	);
 	port(
 		clk       : in std_logic;
@@ -140,21 +145,48 @@ begin
 		m2_outputs <= icache_outputs;
 	end generate icache_disabled;
 
-	dmem_if: entity work.pp_wb_adapter
-		port map(
-			clk => clk,
-			reset => reset,
-			mem_address => dmem_address,
-			mem_data_in => dmem_data_out,
-			mem_data_out => dmem_data_in,
-			mem_data_size => dmem_data_size,
-			mem_read_req => dmem_read_req,
-			mem_read_ack => dmem_read_ack,
-			mem_write_req => dmem_write_req,
-			mem_write_ack => dmem_write_ack,
-			wb_inputs => dmem_if_inputs,
-			wb_outputs => dmem_if_outputs
-		);
+	dcache_enabled: if DCACHE_ENABLE
+	generate
+		dcache: entity work.pp_dcache
+			generic map(
+				MAX_LINE_SIZE => DCACHE_MAX_LINE_SIZE,
+				NUM_LINES     => DCACHE_NUM_LINES,
+				REGION_BASE   => DCACHE_REGION_BASE,
+				REGION_LD_LEN => DCACHE_REGION_LD_LEN
+			) port map (
+				clk           => clk,
+				reset         => reset,
+				mem_address   => dmem_address,
+				mem_data_in   => dmem_data_out,
+				mem_data_out  => dmem_data_in,
+				mem_data_size => dmem_data_size,
+				mem_read_req  => dmem_read_req,
+				mem_read_ack  => dmem_read_ack,
+				mem_write_req => dmem_write_req,
+				mem_write_ack => dmem_write_ack,
+				wb_inputs     => dmem_if_inputs,
+				wb_outputs    => dmem_if_outputs
+			);
+	end generate dcache_enabled;
+
+	dcache_disabled: if not DCACHE_ENABLE
+	generate
+		entity work.pp_wb_adapter
+			port map(
+				clk => clk,
+				reset => reset,
+				mem_address => dmem_address,
+				mem_data_in => dmem_data_out,
+				mem_data_out => dmem_data_in,
+				mem_data_size => dmem_data_size,
+				mem_read_req => dmem_read_req,
+				mem_read_ack => dmem_read_ack,
+				mem_write_req => dmem_write_req,
+				mem_write_ack => dmem_write_ack,
+				wb_inputs => dmem_if_inputs,
+				wb_outputs => dmem_if_outputs
+			);
+	end generate dcache_disabled;
 
 	arbiter: entity work.pp_wb_arbiter
 		port map(
