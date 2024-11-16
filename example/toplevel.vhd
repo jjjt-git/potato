@@ -10,8 +10,7 @@ use ieee.std_logic_1164.all;
 -- 0x00000000: Main memory (128 kB)
 -- 0xc0000000: Timer0
 -- 0xc0001000: Timer1
--- 0xc0002000: UART0 (for host communication)
--- 0xc0003000: UART1 (for connecting a GPS PMOD to JA)
+-- 0xc0002000: UART (for host communication)
 -- 0xc0004000: GPIO0
 -- 0xc0005000: Interconnect control/error module
 -- 0xffff8000: Application execution environment ROM (16 kB)
