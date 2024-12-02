@@ -22,7 +22,9 @@ entity pp_potato is
 		DCACHE_REGION_BASE     : std_logic_vector(31 downto 0) := x"00000000"; --! The base address of the cached region.
 		DCACHE_REGION_LD_LEN   : natural                       := 20;          --! The binary logarithm of the size of the cached region, i.e. the length of the address-offset.
 		DCACHE_MAX_LINE_SIZE   : natural                       := 8;           --! Maximum number of words per data cache line.
-		DCACHE_NUM_LINES       : natural                       := 128          --! Number of cache lines in the data cache.
+		DCACHE_NUM_LINES       : natural                       := 128;         --! Number of cache lines in the data cache.
+		DCACHE_HAS_DLFU        : boolean                       := true;        --! Whether to enable the DLFU policy.
+		DCACHE_DLFU_RATE       : natural                       := 32           --! Number of accesses to a set before every counter in the set is halfed.
 	);
 	port(
 		clk       : in std_logic;
@@ -150,9 +152,12 @@ begin
 		dcache: entity work.pp_dcache
 			generic map(
 				MAX_LINE_SIZE => DCACHE_MAX_LINE_SIZE,
-				NUM_LINES     => DCACHE_NUM_LINES,
+				CACHE_DEPTH   => DCACHE_NUM_LINES,
 				REGION_BASE   => DCACHE_REGION_BASE,
-				REGION_LD_LEN => DCACHE_REGION_LD_LEN
+				REGION_LD_LEN => DCACHE_REGION_LD_LEN,
+
+				HAS_DECAYING_LFU => DCACHE_HAS_DLFU,
+				DLFU_RATE        => DCACHE_DLFU_RATE
 			) port map (
 				clk           => clk,
 				reset         => reset,
@@ -171,7 +176,7 @@ begin
 
 	dcache_disabled: if not DCACHE_ENABLE
 	generate
-		entity work.pp_wb_adapter
+		dmem_if: entity work.pp_wb_adapter
 			port map(
 				clk => clk,
 				reset => reset,

@@ -9,6 +9,7 @@ SOURCE_FILES := \
 	src/pp_alu_mux.vhd \
 	src/pp_alu_control_unit.vhd \
 	src/pp_icache.vhd \
+	src/pp_dcache.vhd \
 	src/pp_comparator.vhd \
 	src/pp_constants.vhd \
 	src/pp_control_unit.vhd \
@@ -131,22 +132,22 @@ run-soc-tests: potato.prj compile-tests
 ghdl-import: | ghdl_work
 	ghdl -i $(GHDL_OPTS) $(SOURCE_FILES) $(TESTBENCHES)
 
-run-tests-ghdl: potato.prj compile-tests ghdl-import | ghdl_work
+run-tests-ghdl: potato.prj compile-tests ghdl-import | ghdl_work ghdl_wave/core
 	ghdl -m $(GHDL_OPTS) tb_processor
 	for test in $(RISCV_TESTS) $(LOCAL_TESTS); do \
 		echo -ne "Running test $$test:\t"; \
 		DMEM_FILENAME="empty_dmem.hex"; \
 		test -f test-build/$$test-dmem.hex && DMEM_FILENAME="tests-build/$$test-dmem.hex"; \
-		ghdl -r $(GHDL_OPTS) tb_processor -gDMEM_FILENAME=$$DMEM_FILENAME -gIMEM_FILENAME=tests-build/$$test-imem.hex; \
+		ghdl -r $(GHDL_OPTS) tb_processor -gDMEM_FILENAME=$$DMEM_FILENAME -gIMEM_FILENAME=tests-build/$$test-imem.hex --wave=ghdl_wave/core/$$test.ghw; \
 	done
 
-run-soc-tests-ghdl: potato.prj compile-tests ghdl-import | ghdl_work
+run-soc-tests-ghdl: potato.prj compile-tests ghdl-import | ghdl_work ghdl_wave/soc
 	ghdl -m $(GHDL_OPTS) tb_soc
 	for test in $(RISCV_TESTS) $(LOCAL_TESTS); do \
 		echo -ne "Running SOC test $$test:\t"; \
 		DMEM_FILENAME="empty_dmem.hex"; \
 		test -f test-build/$$test-dmem.hex && DMEM_FILENAME="tests-build/$$test-dmem.hex"; \
-		ghdl -r $(GHDL_OPTS) tb_soc -gDMEM_FILENAME=$$DMEM_FILENAME -gIMEM_FILENAME=tests-build/$$test-imem.hex; \
+		ghdl -r $(GHDL_OPTS) tb_soc -gDMEM_FILENAME=$$DMEM_FILENAME -gIMEM_FILENAME=tests-build/$$test-imem.hex --wave=ghdl_wave/soc/$$test.ghw; \
 	done
 
 remove-xilinx-garbage:
@@ -156,7 +157,7 @@ remove-xilinx-garbage:
 remove-ghdl-stuff:
 	-$(RM) -r ghdl_work
 
-ghdl_work:
+ghdl_work ghdl_wave/soc ghdl_wave/core:
 	mkdir -p $@
 
 clean: remove-xilinx-garbage remove-ghdl-stuff
