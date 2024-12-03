@@ -22,7 +22,7 @@ entity pp_dcache is
                 CACHE_DEPTH      : integer                       := 128;         --! Number of cache line sets in the data cache.
 		
 		HAS_DECAYING_LFU : boolean                       := true;        --! True, if DLFU should be available.
-		DLFU_RATE        : integer
+		DLFU_RATE        : integer                       := 32           --! Number of accesses to a set between decays.
 	);
 	port(
 		clk   : in std_logic;
@@ -77,9 +77,14 @@ architecture behaviour of pp_dcache is
 	type cache_tag_a    is array(0 to CACHE_DEPTH - 1) of cache_tag_t;
 
 	-- cache metadata type
+	type dlfu_meta_t is record
+		set_c  : integer range 0 to DLFU_RATE;
+		line_c : integer range 0 to DLFU_RATE * 2;
+	end record;
 	type cache_meta_t is record
 		dirty : std_logic;
-		lru : std_logic_vector(log2(WAYNESS) - 1 downto 0);
+		lru   : integer range 0 to WAYNESS;
+		dlfu  : dlfu_meta_t;
 	end record;
 	type cache_meta_a is array(0 to CACHE_DEPTH - 1) of cache_meta_t;
 
@@ -97,12 +102,13 @@ architecture behaviour of pp_dcache is
 	signal hit_way    : way_t;
 	signal hit_line   : cache_line_t;
 	signal hit_line_a : cache_line_words_a;
+	signal pt_was_we  : std_logic;
 
 	-- address split signals
 	signal addr_region : addr_region_t;
-	signal addr_offset : addr_offset_t;
-	signal addr_index  : addr_index_t;
-	signal addr_tag    : addr_tag_t;
+	signal addr_offset, addr_offset_latched : addr_offset_t;
+	signal addr_index , addr_index_latched  : addr_index_t;
+	signal addr_tag   , addr_tag_latched    : addr_tag_t;
 
 	-- signals for replace control
 	signal repl_way   : way_t;
@@ -130,6 +136,13 @@ architecture behaviour of pp_dcache is
 	signal wb_mode : wb_mode_t;
 	signal wb_tag  : addr_tag_t;
 	signal wb_mask : word_mask_t;
+
+	-- general policy signals
+	type active_pol_t is (DLFU, LRU);
+	signal active_pol : active_pol_t;
+
+	-- dlfu policy signals
+	signal dlfu_repl : way_t;
 
 	-- helper functions
 	function get_index(
@@ -170,9 +183,10 @@ begin
 	addr_index  <= mem_address(31 - region_bits - tag_bits downto 32 - region_bits - tag_bits - index_bits);
 	addr_offset <= mem_address(31 - region_bits - tag_bits - index_bits downto 32 - region_bits - tag_bits - index_bits - offset_bits);
 
-	mem_data_out <= hit_line_a(to_integer(unsigned(addr_offset)));
+	mem_data_out <= hit_line_a(to_integer(unsigned(addr_offset_latched))) when main_state = READ_RESPOND else
+			wb_rbuffer_words(to_integer(unsigned(addr_offset_latched)));
 
-	ack_signals: process(main_state) begin
+	ack_signals: process(main_state, wb_mode, mem_write_req, mem_read_req) begin
 		case main_state is
 			when READ_RESPOND =>
 				mem_read_ack <= '1';
@@ -180,6 +194,9 @@ begin
 			when WRITE_RESPOND =>
 				mem_read_ack <= '0';
 				mem_write_ack <= '1';
+			when PASS_THROUGH_RESPOND =>
+				mem_read_ack  <= not pt_was_we;
+				mem_write_ack <= pt_was_we;
 			when others =>
 				mem_read_ack <= '0';
 				mem_write_ack <= '0';
@@ -193,16 +210,24 @@ begin
 	access_mask_shifted <= access_mask sll to_integer(unsigned(mem_address(1 downto 0)));
 	data_shifted <= mem_data_in sll (to_integer(unsigned(mem_address(1 downto 0))) * 8);
 
-	decompose_line: for ii in 0 to MAX_LINE_SIZE - 1 generate
+	decompose_lines: for ii in 0 to MAX_LINE_SIZE - 1 generate
 		hit_line_a(ii) <= hit_line(32 * ii + 31 downto 32 * ii);
-	end generate decompose_line;
 
-	tag_lookup: process(addr_tag, addr_index, tag_a, valid_a) begin
+		wb_wbuffer_words(ii) <= wb_wbuffer_line(32 * ii + 31 downto 32 * ii);
+		wb_rbuffer_line(32 * ii + 31 downto 32 * ii) <= wb_rbuffer_words(ii);
+	end generate decompose_lines;
+
+	tag_lookup: process(addr_tag, addr_index, tag_a, valid_a)
+		variable hit : std_logic;
+	begin
+		hit := '0';
 		for ii in 0 to WAYNESS loop
 			if valid_a(get_index(addr_index, ii)) = '1' and tag_a(get_index(addr_index, ii)) = addr_tag then
+				hit := '1';
 				hit_way <= ii;
 			end if;
 		end loop;
+		cache_hit <= hit;
 	end process tag_lookup;
 
 	wb_outputs.sel <= wb_mask;
@@ -241,19 +266,37 @@ begin
 								wb_mode <= IDLE;
 							else
 								wb_start <= wb_start + 1;
-								wb_rbuffer_words(wb_start) <= wb_inputs.dat;
 							end if;
+							wb_rbuffer_words(wb_start) <= wb_inputs.dat;
 						end if;
 				end case;
 
 				case main_state is
 					when IDLE =>
 						if mem_read_req or mem_write_req then -- pseudo-transition to addr-decode
+							addr_tag_latched    <= addr_tag;
+							addr_index_latched  <= addr_index;
+							addr_offset_latched <= addr_offset;
 							if in_segment = '0' then
+								wb_start <= to_integer(unsigned(addr_offset));
+								wb_stop  <= to_integer(unsigned(addr_offset));
+								wb_tag   <= addr_tag;
+								wb_mask  <= access_mask_shifted;
+
+								wb_wbuffer_line <= std_logic_vector(resize(unsigned(data_shifted), 32 * MAX_LINE_SIZE) sll (to_integer(unsigned(addr_offset)) * 32));
+
+								if mem_read_req then
+									wb_mode <= READ;
+								else
+									wb_mode <= WRITE;
+								end if;
+
 								main_state <= PASS_THROUGH;
 							elsif mem_read_req then
 								need_wb <= '0';
 								if cache_hit then
+									hit_line <= data_a(get_index(addr_index, hit_way)) srl (to_integer(unsigned(mem_address(1 downto 0))) * 8);
+
 									main_state <= READ_RESPOND;
 								else
 									wb_tag <= addr_tag;
@@ -266,9 +309,23 @@ begin
 									main_state <= REFILL;
 								end if;
 							else
-							if cache_hit then
-								main_state <= WRITE_RESPOND;
+								if cache_hit then
+									main_state <= WRITE_RESPOND;
 								else
+									wb_start <= to_integer(unsigned(addr_offset));
+									wb_stop  <= to_integer(unsigned(addr_offset));
+									wb_tag   <= addr_tag;
+									wb_mask  <= access_mask_shifted;
+				
+									wb_wbuffer_line <= std_logic_vector(resize(unsigned(data_shifted), 32 * MAX_LINE_SIZE) sll (to_integer(unsigned(addr_offset)) * 32));
+				
+									if mem_read_req then
+										wb_mode <= READ;
+									else
+										wb_mode <= WRITE;
+									end if;
+
+									main_state <= PASS_THROUGH;
 								end if;
 							end if;
 						end if;
@@ -288,7 +345,7 @@ begin
 							main_state <= REPLACE;
 						end if;
 					when REPLACE =>
-						if meta_a(get_index(addr_index, repl_way)).dirty then
+						if valid_a(get_index(addr_index, repl_way)) and meta_a(get_index(addr_index, repl_way)).dirty then
 							wb_tag <= tag_a(get_index(addr_index, repl_way));
 							wb_wbuffer_line <= data_a(get_index(addr_index, repl_way));
 	
@@ -296,13 +353,16 @@ begin
 							wb_stop  <= MAX_LINE_SIZE - 1;
 							wb_mask  <= b"1111";
 							wb_mode  <= WRITE;
-						end if;
 
-						need_wb <= meta_a(get_index(addr_index, repl_way)).dirty;
+							need_wb <= '1';
+						end if;
 						
-						tag_a (get_index(addr_index, repl_way)) <= addr_tag;
-						data_a(get_index(addr_index, repl_way)) <= wb_rbuffer_line;
-						meta_a(get_index(addr_index, repl_way)).dirty <= '0';
+						tag_a  (get_index(addr_index, repl_way)) <= addr_tag;
+						data_a (get_index(addr_index, repl_way)) <= wb_rbuffer_line;
+						meta_a (get_index(addr_index, repl_way)).dirty <= '0';
+						valid_a(get_index(addr_index, repl_way)) <= '1';
+
+						hit_line <= wb_rbuffer_line;
 
 						main_state <= READ_RESPOND;
 
@@ -320,27 +380,33 @@ begin
 							data_a(get_index(addr_index, hit_way))(31 downto 24) <= data_shifted(31 downto 24);
 						end if;
 
+						meta_a(get_index(addr_index, hit_way)).dirty <= '1';
+
 						main_state <= IDLE;
 
 					when PASS_THROUGH =>
-						wb_start <= to_integer(unsigned(addr_offset));
-						wb_stop  <= to_integer(unsigned(addr_offset));
-						wb_tag   <= addr_tag;
-						wb_mask  <= access_mask_shifted;
-
-						wb_wbuffer_line <= data_shifted sll (to_integer(unsigned(addr_offset)) * 32);
-
-						if mem_read_req then
-							wb_mode <= READ;
-						else
-							wb_mode <= WRITE;
+						if wb_mode = IDLE then
+							pt_was_we <= mem_write_req;
+							main_state <= PASS_THROUGH_RESPOND;
 						end if;
-
-						main_state <= PASS_THROUGH_RESPOND;
 					when PASS_THROUGH_RESPOND =>
+						main_state <= IDLE;
 				end case;
 			end if;
 		end if;
 	end process controller;
+
+	active_pol <= LRU;
+	
+	policy_sel: process(active_pol, dlfu_repl) begin
+		case active_pol is
+			when DLFU =>
+				repl_way <= dlfu_repl;
+				pol_finished <= '1';
+			when others =>
+				repl_way <= 0;
+				pol_finished <= '1';
+		end case;
+	end process policy_sel;
 	
 end architecture behaviour;
