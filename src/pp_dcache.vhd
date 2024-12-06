@@ -66,6 +66,8 @@ architecture behaviour of pp_dcache is
 	subtype offset_t is integer range 0 to MAX_LINE_SIZE;
 
 	subtype word_mask_t is std_logic_vector(3 downto 0);
+	type word_mask_a    is array(0 to MAX_LINE_SIZE - 1) of word_mask_t;
+	subtype line_mask_t is std_logic_vector(MAX_LINE_SIZE * 4 - 1 downto 0);
 	
 	-- cache line types
 	subtype cache_line_t    is std_logic_vector(MAX_LINE_SIZE * 32 - 1 downto 0);
@@ -94,13 +96,13 @@ architecture behaviour of pp_dcache is
 	signal meta_a  : cache_meta_a;
 	signal valid_a : std_logic_vector(CACHE_DEPTH - 1 downto 0);
 
-	attribute ram_style           : string;
-	attribute ram_style of data_a : signal is "block";
+	attribute ram_style            : string;
+	attribute ram_style of data_a  : signal is "block";
 
 	-- signals for response control
 	signal cache_hit  : std_logic;
 	signal hit_way    : way_t;
-	signal hit_line   : cache_line_t;
+	signal hit_line, hit_line_shifted : cache_line_t;
 	signal hit_line_a : cache_line_words_a;
 	signal pt_was_we  : std_logic;
 
@@ -123,8 +125,8 @@ architecture behaviour of pp_dcache is
 	signal in_segment, need_wb : std_logic;
 	signal line_index : index_t;
 	signal lookup_tag : addr_tag_t;
-	signal access_mask, access_mask_shifted : word_mask_t;
-	signal data_shifted : std_logic_vector(31 downto 0);
+	signal access_mask, access_mask_shifted : line_mask_t;
+	signal data_shifted : cache_line_t;
 
 	signal pol_finished : std_logic;
 	signal wb_start, wb_stop : offset_t;
@@ -135,7 +137,8 @@ architecture behaviour of pp_dcache is
 	type wb_mode_t is (IDLE, WRITE, READ);
 	signal wb_mode : wb_mode_t;
 	signal wb_tag  : addr_tag_t;
-	signal wb_mask : word_mask_t;
+	signal wb_mask : line_mask_t;
+	signal wb_mask_a : word_mask_a;
 
 	-- general policy signals
 	type active_pol_t is (DLFU, LRU);
@@ -186,7 +189,7 @@ begin
 	mem_data_out <= hit_line_a(to_integer(unsigned(addr_offset_latched))) when main_state = READ_RESPOND else
 			wb_rbuffer_words(to_integer(unsigned(addr_offset_latched)));
 
-	ack_signals: process(main_state, wb_mode, mem_write_req, mem_read_req) begin
+	ack_signals: process(main_state, wb_mode, pt_was_we) begin
 		case main_state is
 			when READ_RESPOND =>
 				mem_read_ack <= '1';
@@ -206,31 +209,42 @@ begin
 	in_segment <= '1' when addr_region = REGION_BASE(31 downto 32 - region_bits) else '0';
 	line_index <= get_index(addr_index, hit_way);
 
-	access_mask <= get_mask(mem_data_size);
-	access_mask_shifted <= access_mask sll to_integer(unsigned(mem_address(1 downto 0)));
-	data_shifted <= mem_data_in sll (to_integer(unsigned(mem_address(1 downto 0))) * 8);
+	access_mask <= std_logic_vector(resize(unsigned(get_mask(mem_data_size)), 4 * MAX_LINE_SIZE));
+	access_mask_shifted <= std_logic_vector(
+		shift_left(unsigned(access_mask),
+			to_integer(unsigned(mem_address(1 downto 0))) +
+			to_integer(unsigned(addr_offset) * 4)));
+	data_shifted <= std_logic_vector(
+		shift_left(resize(unsigned(mem_data_in), 32 * MAX_LINE_SIZE),
+			to_integer(unsigned(mem_address(1 downto 0))) * 8 +
+			to_integer(unsigned(addr_offset) * 32)));
+	hit_line_shifted <= std_logic_vector(shift_left(unsigned(hit_line), to_integer(unsigned(mem_address(1 downto 0))) * 8));
 
 	decompose_lines: for ii in 0 to MAX_LINE_SIZE - 1 generate
-		hit_line_a(ii) <= hit_line(32 * ii + 31 downto 32 * ii);
+		hit_line_a(ii) <= hit_line_shifted(32 * ii + 31 downto 32 * ii);
 
-		wb_wbuffer_words(ii) <= wb_wbuffer_line(32 * ii + 31 downto 32 * ii);
-		wb_rbuffer_line(32 * ii + 31 downto 32 * ii) <= wb_rbuffer_words(ii);
+		wb_wbuffer_words(ii) <= wb_wbuffer_line(32 * (ii + 1) - 1 downto 32 * ii);
+		wb_rbuffer_line(32 * (ii + 1) - 1 downto 32 * ii) <= wb_rbuffer_words(ii);
+		wb_mask_a(ii) <= wb_mask(4 * (ii + 1) - 1 downto 4 * ii);
 	end generate decompose_lines;
 
 	tag_lookup: process(addr_tag, addr_index, tag_a, valid_a)
 		variable hit : std_logic;
+		variable way : way_t;
 	begin
 		hit := '0';
+		way := 0;
 		for ii in 0 to WAYNESS loop
 			if valid_a(get_index(addr_index, ii)) = '1' and tag_a(get_index(addr_index, ii)) = addr_tag then
 				hit := '1';
-				hit_way <= ii;
+				way := ii;
 			end if;
 		end loop;
+		hit_way <= way;
 		cache_hit <= hit;
 	end process tag_lookup;
 
-	wb_outputs.sel <= wb_mask;
+	wb_outputs.sel <= wb_mask_a(wb_start);
 
 	wb_outputs.adr <= get_address(addr_index, wb_tag) & std_logic_vector(to_unsigned(wb_start, addr_offset'length));
 	wb_outputs.dat <= wb_wbuffer_words(wb_start);
@@ -252,12 +266,31 @@ begin
 		end case;
 	end process wb_signals;
 
-	controller: process(clk) begin
+	controller: process(clk)
+		variable index_r, index_h, index: index_t;
+		variable rdata, wdata: cache_line_t;
+		variable wmask: line_mask_t;
+	begin
+		index_r := get_index(addr_index, repl_way);
+		index_h := get_index(addr_index, hit_way);
+		index   := 0;
+		wmask   := (others => '0');
+		wdata   := (others => '-');
+		
 		if rising_edge(clk) then
+			if main_state = REPLACE then
+				index := index_r;
+			else
+				index := index_h;
+			end if;
+			
+			rdata := data_a(index);
+		
 			if reset = '1' then
 				main_state <= IDLE;
 				wb_mode <= IDLE;
 			else
+			
 				case wb_mode is
 					when IDLE => wb_mode <= IDLE;
 					when others =>
@@ -273,7 +306,7 @@ begin
 
 				case main_state is
 					when IDLE =>
-						if mem_read_req or mem_write_req then -- pseudo-transition to addr-decode
+						if mem_read_req = '1' or mem_write_req = '1' then -- pseudo-transition to addr-decode
 							addr_tag_latched    <= addr_tag;
 							addr_index_latched  <= addr_index;
 							addr_offset_latched <= addr_offset;
@@ -285,17 +318,17 @@ begin
 
 								wb_wbuffer_line <= std_logic_vector(resize(unsigned(data_shifted), 32 * MAX_LINE_SIZE) sll (to_integer(unsigned(addr_offset)) * 32));
 
-								if mem_read_req then
+								if mem_read_req = '1' then
 									wb_mode <= READ;
 								else
 									wb_mode <= WRITE;
 								end if;
 
 								main_state <= PASS_THROUGH;
-							elsif mem_read_req then
+							elsif mem_read_req = '1' then
 								need_wb <= '0';
-								if cache_hit then
-									hit_line <= data_a(get_index(addr_index, hit_way)) srl (to_integer(unsigned(mem_address(1 downto 0))) * 8);
+								if cache_hit = '1' then
+									hit_line <= rdata;
 
 									main_state <= READ_RESPOND;
 								else
@@ -303,13 +336,13 @@ begin
 
 									wb_start <= 0;
 									wb_stop  <= MAX_LINE_SIZE - 1;
-									wb_mask  <= b"1111";
+									wb_mask  <= (others => '1');
 									wb_mode  <= READ;
 
 									main_state <= REFILL;
 								end if;
 							else
-								if cache_hit then
+								if cache_hit = '1' then
 									main_state <= WRITE_RESPOND;
 								else
 									wb_start <= to_integer(unsigned(addr_offset));
@@ -319,11 +352,7 @@ begin
 				
 									wb_wbuffer_line <= std_logic_vector(resize(unsigned(data_shifted), 32 * MAX_LINE_SIZE) sll (to_integer(unsigned(addr_offset)) * 32));
 				
-									if mem_read_req then
-										wb_mode <= READ;
-									else
-										wb_mode <= WRITE;
-									end if;
+									wb_mode <= WRITE;
 
 									main_state <= PASS_THROUGH;
 								end if;
@@ -331,7 +360,7 @@ begin
 						end if;
 
 					when READ_RESPOND =>
-						if need_wb then
+						if need_wb = '1' then
 							main_state <= WRITE_BACK;
 						else
 							main_state <= IDLE;
@@ -345,42 +374,30 @@ begin
 							main_state <= REPLACE;
 						end if;
 					when REPLACE =>
-						if valid_a(get_index(addr_index, repl_way)) and meta_a(get_index(addr_index, repl_way)).dirty then
-							wb_tag <= tag_a(get_index(addr_index, repl_way));
-							wb_wbuffer_line <= data_a(get_index(addr_index, repl_way));
-	
+						if valid_a(index_r) = '1' and meta_a(index_r).dirty = '1' then
+							wb_tag <= tag_a(index_r);
+							wb_wbuffer_line <= rdata;
+	   
 							wb_start <= 0;
 							wb_stop  <= MAX_LINE_SIZE - 1;
-							wb_mask  <= b"1111";
+							wb_mask  <= (others => '1');
 							wb_mode  <= WRITE;
 
 							need_wb <= '1';
 						end if;
 						
-						tag_a  (get_index(addr_index, repl_way)) <= addr_tag;
-						data_a (get_index(addr_index, repl_way)) <= wb_rbuffer_line;
-						meta_a (get_index(addr_index, repl_way)).dirty <= '0';
-						valid_a(get_index(addr_index, repl_way)) <= '1';
-
-						hit_line <= wb_rbuffer_line;
+						tag_a  (index_r) <= addr_tag;
+						meta_a (index_r).dirty <= '0';
+						valid_a(index_r) <= '1';
+						wdata  := wb_rbuffer_line;
+						wmask  := (others => '1');
 
 						main_state <= READ_RESPOND;
 
 					when WRITE_RESPOND =>
-						if access_mask_shifted(0) = '1' then
-							data_a(get_index(addr_index, hit_way))(07 downto 00) <= data_shifted(07 downto 00);
-						end if;
-						if access_mask_shifted(1) = '1' then
-							data_a(get_index(addr_index, hit_way))(15 downto 08) <= data_shifted(15 downto 08);
-						end if;
-						if access_mask_shifted(2) = '1' then
-							data_a(get_index(addr_index, hit_way))(23 downto 16) <= data_shifted(23 downto 16);
-						end if;
-						if access_mask_shifted(3) = '1' then
-							data_a(get_index(addr_index, hit_way))(31 downto 24) <= data_shifted(31 downto 24);
-						end if;
-
-						meta_a(get_index(addr_index, hit_way)).dirty <= '1';
+						meta_a(index_h).dirty <= '1';
+						wdata  := data_shifted;
+						wmask  := access_mask_shifted;
 
 						main_state <= IDLE;
 
@@ -393,6 +410,12 @@ begin
 						main_state <= IDLE;
 				end case;
 			end if;
+			
+			for ii in 0 to MAX_LINE_SIZE * 4 - 1 loop
+				if wmask(ii) = '1' then
+					data_a(index)(8 * (ii + 1) - 1 downto 8 * ii) <= wdata(8 * (ii + 1) - 1 downto 8 * ii);
+				end if;
+			end loop;
 		end if;
 	end process controller;
 

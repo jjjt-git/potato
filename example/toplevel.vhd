@@ -5,7 +5,7 @@
 library ieee;
 use ieee.std_logic_1164.all;
 
--- This is a SoC design for the Arty development board. It has the following memory layout:
+-- This is a SoC design for the Arty or Nexys development board. It has the following memory layout:
 --
 -- 0x00000000: Main memory (128 kB)
 -- 0xc0000000: Timer0
@@ -16,6 +16,18 @@ use ieee.std_logic_1164.all;
 -- 0xffff8000: Application execution environment ROM (16 kB)
 -- 0xffffc000: Application execution environment RAM (16 kB)
 entity toplevel is
+	generic(
+		ICACHE_ENABLE          : boolean                       := true;        --! Whether to enable the instruction cache.                                                                                                                                          
+		ICACHE_LINE_SIZE       : natural                       := 4;           --! Number of words per instruction cache line.                                                                                                                                       
+		ICACHE_NUM_LINES       : natural                       := 128;         --! Number of cache lines in the instruction cache.                                                                                                                                   
+		DCACHE_ENABLE          : boolean                       := true;        --! Whether to enable the data cache.                                                                                                                                                 
+		DCACHE_REGION_BASE     : std_logic_vector(31 downto 0) := x"00000000"; --! The base address of the cached region.                                                                                                                                            
+		DCACHE_REGION_LD_LEN   : natural                       := 20;          --! The binary logarithm of the size of the cached region, i.e. the length of the address-offset.                                                                                     
+		DCACHE_MAX_LINE_SIZE   : natural                       := 8;           --! Maximum number of words per data cache line.                                                                                                                                      
+		DCACHE_CACHE_DEPTH     : natural                       := 128;         --! Number of cache lines in the data cache.                                                                                                                                          
+		DCACHE_HAS_DLFU        : boolean                       := true;        --! Whether to enable the DLFU policy.                                                                                                                                                
+		DCACHE_DLFU_RATE       : natural                       := 32           --! Number of accesses to a set before every counter in the set is halfed. 
+	);
 	port(
 		clk     : in  std_logic;
 		reset_n : in  std_logic;
@@ -299,8 +311,17 @@ begin
 
 	processor: entity work.pp_potato
 		generic map(
-			RESET_ADDRESS => x"ffff8000",
-			ICACHE_ENABLE => false
+			RESET_ADDRESS        => x"ffff8000",
+			ICACHE_ENABLE        => ICACHE_ENABLE,
+			ICACHE_LINE_SIZE     => ICACHE_LINE_SIZE,
+			ICACHE_NUM_LINES     => ICACHE_NUM_LINES,
+			DCACHE_ENABLE        => DCACHE_ENABLE,
+			DCACHE_REGION_BASE   => x"ffffc000",
+			DCACHE_REGION_LD_LEN => 14,
+			DCACHE_MAX_LINE_SIZE => DCACHE_MAX_LINE_SIZE,
+			DCACHE_NUM_LINES     => DCACHE_CACHE_DEPTH,
+			DCACHE_HAS_DLFU      => DCACHE_HAS_DLFU,
+			DCACHE_DLFU_RATE     => DCACHE_DLFU_RATE
 		) port map(
 			clk => system_clk,
 			reset => reset,
