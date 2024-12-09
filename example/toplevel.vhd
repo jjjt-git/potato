@@ -20,7 +20,7 @@ entity toplevel is
 		ICACHE_ENABLE          : boolean                       := true;        --! Whether to enable the instruction cache.                                                                                                                                          
 		ICACHE_LINE_SIZE       : natural                       := 4;           --! Number of words per instruction cache line.                                                                                                                                       
 		ICACHE_NUM_LINES       : natural                       := 128;         --! Number of cache lines in the instruction cache.                                                                                                                                   
-		DCACHE_ENABLE          : boolean                       := true;        --! Whether to enable the data cache.                                                                                                                                                 
+		DCACHE_ENABLE          : boolean                       := false;        --! Whether to enable the data cache.                                                                                                                                                 
 		DCACHE_REGION_BASE     : std_logic_vector(31 downto 0) := x"00000000"; --! The base address of the cached region.                                                                                                                                            
 		DCACHE_REGION_LD_LEN   : natural                       := 20;          --! The binary logarithm of the size of the cached region, i.e. the length of the address-offset.                                                                                     
 		DCACHE_MAX_LINE_SIZE   : natural                       := 8;           --! Maximum number of words per data cache line.                                                                                                                                      
@@ -312,6 +312,8 @@ begin
 	processor: entity work.pp_potato
 		generic map(
 			RESET_ADDRESS        => x"ffff8000",
+			REGISTER_WISHBONE    => true,
+			REGISTER_INTERRUPT   => true,
 			ICACHE_ENABLE        => ICACHE_ENABLE,
 			ICACHE_LINE_SIZE     => ICACHE_LINE_SIZE,
 			ICACHE_NUM_LINES     => ICACHE_NUM_LINES,

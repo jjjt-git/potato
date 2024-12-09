@@ -15,6 +15,8 @@ entity pp_potato is
 		PROCESSOR_ID           : std_logic_vector(31 downto 0) := x"00000000"; --! Processor ID.
 		RESET_ADDRESS          : std_logic_vector(31 downto 0) := x"00000000"; --! Address of the first instruction to execute.
 		MTIME_DIVIDER          : positive                      := 5;           --! Divider for the clock driving the MTIME counter.
+		REGISTER_WISHBONE      : boolean                       := false;       --! Whether to register the wishbone-bus-signals to relax timing.
+		REGISTER_INTERRUPT     : boolean                       := false;       --! Whether to register the interrupt vector.
 		ICACHE_ENABLE          : boolean                       := true;        --! Whether to enable the instruction cache.
 		ICACHE_LINE_SIZE       : natural                       := 4;           --! Number of words per instruction cache line.
 		ICACHE_NUM_LINES       : natural                       := 128;         --! Number of cache lines in the instruction cache.
@@ -72,6 +74,9 @@ architecture behaviour of pp_potato is
     -- Arbiter signals:
 	signal m1_inputs, m2_inputs   : wishbone_master_inputs;
 	signal m1_outputs, m2_outputs : wishbone_master_outputs;
+	
+	-- interrupt signals
+	signal irq_buffer : std_logic_vector(7 downto 0);
 
 begin
 
@@ -95,8 +100,20 @@ begin
 			dmem_write_req => dmem_write_req,
 			dmem_write_ack => dmem_write_ack,
 			test_context_out => test_context_out,
-			irq => irq
+			irq => irq_buffer
 		);
+		
+	registered_interrupts: if REGISTER_INTERRUPT generate
+		process(clk) begin
+			if rising_edge(clk) then
+				irq_buffer <= irq;
+			end if;
+		end process;
+	end generate registered_interrupts;
+	
+	unregistered_interrupts: if not REGISTER_INTERRUPT generate	
+		irq_buffer <= irq;
+	end generate unregistered_interrupts;
 
 	icache_enabled: if ICACHE_ENABLE
 	generate
@@ -194,7 +211,9 @@ begin
 	end generate dcache_disabled;
 
 	arbiter: entity work.pp_wb_arbiter
-		port map(
+		generic map(
+			USE_REGISTERED_INPUTS => REGISTER_WISHBONE
+		) port map(
 			clk => clk,
 			reset => reset,
 			m1_inputs => m1_inputs,

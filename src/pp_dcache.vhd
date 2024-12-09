@@ -15,12 +15,12 @@ use work.pp_utilities.all;
 --! @brief DCache implementation
 entity pp_dcache is
 	generic(
-                REGION_BASE      : std_logic_vector(31 downto 0) := x"00000000"; --! The base address of the cached region.
-                REGION_LD_LEN    : integer                       := 20;          --! The binary logarithm of the size of the cached region, i.e. the length of the address-offset.
-                MAX_LINE_SIZE    : integer                       := 8;           --! Maximum number of words per data cache line.
+		REGION_BASE      : std_logic_vector(31 downto 0) := x"00000000"; --! The base address of the cached region.
+		REGION_LD_LEN    : integer                       := 20;          --! The binary logarithm of the size of the cached region, i.e. the length of the address-offset.
+		MAX_LINE_SIZE    : integer                       := 8;           --! Maximum number of words per data cache line.
 		WAYNESS          : integer                       := 4;           --! Number of ways of the cache array, i.e. physical assoziativity
-                CACHE_DEPTH      : integer                       := 128;         --! Number of cache line sets in the data cache.
-		
+		CACHE_DEPTH      : integer                       := 128;         --! Number of cache line sets in the data cache.
+
 		HAS_DECAYING_LFU : boolean                       := true;        --! True, if DLFU should be available.
 		DLFU_RATE        : integer                       := 32           --! Number of accesses to a set between decays.
 	);
@@ -102,7 +102,7 @@ architecture behaviour of pp_dcache is
 	-- signals for response control
 	signal cache_hit  : std_logic;
 	signal hit_way    : way_t;
-	signal hit_line, hit_line_shifted : cache_line_t;
+	signal hit_line_shifted : cache_line_t;
 	signal hit_line_a : cache_line_words_a;
 	signal pt_was_we  : std_logic;
 
@@ -122,7 +122,7 @@ architecture behaviour of pp_dcache is
 		READ_RESPOND, REFILL, REPLACE, WRITE_BACK);
 	signal main_state : main_state_t;
 
-	signal in_segment, need_wb : std_logic;
+	signal in_segment, need_wb, crtl_aux : std_logic;
 	signal line_index : index_t;
 	signal lookup_tag : addr_tag_t;
 	signal access_mask, access_mask_shifted : line_mask_t;
@@ -146,6 +146,11 @@ architecture behaviour of pp_dcache is
 
 	-- dlfu policy signals
 	signal dlfu_repl : way_t;
+	
+	-- block ram operator signals
+	signal rdata, wdata : cache_line_t;
+	signal wmask  : line_mask_t;
+	signal aindex : index_t;
 
 	-- helper functions
 	function get_index(
@@ -218,7 +223,7 @@ begin
 		shift_left(resize(unsigned(mem_data_in), 32 * MAX_LINE_SIZE),
 			to_integer(unsigned(mem_address(1 downto 0))) * 8 +
 			to_integer(unsigned(addr_offset) * 32)));
-	hit_line_shifted <= std_logic_vector(shift_left(unsigned(hit_line), to_integer(unsigned(mem_address(1 downto 0))) * 8));
+	hit_line_shifted <= std_logic_vector(shift_left(unsigned(rdata), to_integer(unsigned(mem_address(1 downto 0))) * 8));
 
 	decompose_lines: for ii in 0 to MAX_LINE_SIZE - 1 generate
 		hit_line_a(ii) <= hit_line_shifted(32 * ii + 31 downto 32 * ii);
@@ -265,30 +270,29 @@ begin
 				wb_outputs.stb <= '0';
 		end case;
 	end process wb_signals;
+	
+	operator: process(clk) begin
+		if rising_edge(clk) then
+			rdata <= data_a(aindex);
+			for ii in 0 to MAX_LINE_SIZE - 1 loop
+				if wmask(ii) = '1' then
+					data_a(aindex)(8 * (ii + 1) - 1 downto 8 * ii) <= wdata(8 * (ii + 1) - 1 downto 8 * ii);
+				end if;
+			end loop;
+		end if;
+	end process operator;
 
 	controller: process(clk)
-		variable index_r, index_h, index: index_t;
-		variable rdata, wdata: cache_line_t;
-		variable wmask: line_mask_t;
+		variable index_r, index_h: index_t;
 	begin
 		index_r := get_index(addr_index, repl_way);
 		index_h := get_index(addr_index, hit_way);
-		index   := 0;
-		wmask   := (others => '0');
-		wdata   := (others => '-');
 		
 		if rising_edge(clk) then
-			if main_state = REPLACE then
-				index := index_r;
-			else
-				index := index_h;
-			end if;
-			
-			rdata := data_a(index);
-		
 			if reset = '1' then
 				main_state <= IDLE;
 				wb_mode <= IDLE;
+				wmask <= (others => '0');
 			else
 			
 				case wb_mode is
@@ -328,7 +332,7 @@ begin
 							elsif mem_read_req = '1' then
 								need_wb <= '0';
 								if cache_hit = '1' then
-									hit_line <= rdata;
+									aindex <= index_h;
 
 									main_state <= READ_RESPOND;
 								else
@@ -343,6 +347,10 @@ begin
 								end if;
 							else
 								if cache_hit = '1' then
+									wdata <= data_shifted;
+									wmask <= access_mask_shifted;
+									aindex <= index_h;
+									
 									main_state <= WRITE_RESPOND;
 								else
 									wb_start <= to_integer(unsigned(addr_offset));
@@ -371,33 +379,40 @@ begin
 						end if;
 					when REFILL =>
 						if wb_mode = IDLE and pol_finished = '1' then
+							if valid_a(index_r) = '1' and meta_a(index_r).dirty = '1' then
+								wb_tag <= tag_a(index_r);
+								crtl_aux <= '1';
+		   
+								wb_start <= 0;
+								wb_stop  <= MAX_LINE_SIZE - 1;
+								wb_mask  <= (others => '1');
+		
+								need_wb <= '1';
+							else
+								crtl_aux <= '0';
+							end if;
+						
+							tag_a  (index_r) <= addr_tag;
+							meta_a (index_r).dirty <= '0';
+							valid_a(index_r) <= '1';
+							wdata <= wb_rbuffer_line;
+							wmask <= (others => '1');
+							aindex <= index_r;
+							
 							main_state <= REPLACE;
 						end if;
 					when REPLACE =>
-						if valid_a(index_r) = '1' and meta_a(index_r).dirty = '1' then
-							wb_tag <= tag_a(index_r);
+						wmask <= (others => '0');
+						if crtl_aux = '1' then
 							wb_wbuffer_line <= rdata;
-	   
-							wb_start <= 0;
-							wb_stop  <= MAX_LINE_SIZE - 1;
-							wb_mask  <= (others => '1');
-							wb_mode  <= WRITE;
-
-							need_wb <= '1';
+							wb_mode <= WRITE;
 						end if;
-						
-						tag_a  (index_r) <= addr_tag;
-						meta_a (index_r).dirty <= '0';
-						valid_a(index_r) <= '1';
-						wdata  := wb_rbuffer_line;
-						wmask  := (others => '1');
 
 						main_state <= READ_RESPOND;
 
 					when WRITE_RESPOND =>
+						wmask <= (others => '0');
 						meta_a(index_h).dirty <= '1';
-						wdata  := data_shifted;
-						wmask  := access_mask_shifted;
 
 						main_state <= IDLE;
 
@@ -410,12 +425,6 @@ begin
 						main_state <= IDLE;
 				end case;
 			end if;
-			
-			for ii in 0 to MAX_LINE_SIZE * 4 - 1 loop
-				if wmask(ii) = '1' then
-					data_a(index)(8 * (ii + 1) - 1 downto 8 * ii) <= wdata(8 * (ii + 1) - 1 downto 8 * ii);
-				end if;
-			end loop;
 		end if;
 	end process controller;
 
