@@ -42,6 +42,9 @@ entity pp_core is
 
 		-- Test interface:
 		test_context_out : out test_context;                 --! Test context output.
+		
+		-- Debug interface
+		debug_vector : out std_logic_vector(31 downto 0);
 
 		-- External interrupt input:
 		irq : in std_logic_vector(7 downto 0) --! IRQ inputs.
@@ -159,6 +162,38 @@ architecture behaviour of pp_core is
 	signal wb_exception_context : csr_exception_context;
 
 begin
+
+	write_logging: process
+		variable adr, data : std_logic_vector(31 downto 0);
+		variable size : std_logic_vector(1 downto 0);
+	begin
+		wait until dmem_write_req = '1';
+		adr  := dmem_address;
+		data := dmem_data_out;
+		size := dmem_data_size;
+		wait until dmem_write_ack = '1';
+		report "write " & to_hstring(data) & "@" & to_hstring(adr) & "(" & to_hstring(size) & ")";
+	end process write_logging;
+
+	read_logging: process
+		variable adr, data : std_logic_vector(31 downto 0);
+		variable size : std_logic_vector(1 downto 0);
+	begin
+		wait until dmem_read_req = '1';
+		adr  := dmem_address;
+		size := dmem_data_size;
+		wait until dmem_read_ack = '1';
+		data := dmem_data_in;
+		report "read " & to_hstring(data) & "@" & to_hstring(adr) & "(" & to_hstring(size) & ")";
+	end process read_logging;
+
+	debug_vector <= (0 => id_exception,
+		1 => software_interrupt,
+		2 => timer_interrupt,
+		3 => mem_exception,
+		4 => wb_exception,
+		5 => exception_taken,
+		others => '0');
 
 	stall_if <= stall_id;
 	stall_id <= stall_ex;

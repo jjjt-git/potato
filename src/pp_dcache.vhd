@@ -47,18 +47,20 @@ end entity pp_dcache;
 architecture behaviour of pp_dcache is
 
 	-- address splitting constants
-	constant region_bits : integer := 32 - REGION_LD_LEN;
-	constant offset_bits : integer := log2(MAX_LINE_SIZE);
-	constant index_bits  : integer := log2(CACHE_DEPTH) - log2(WAYNESS);
-	constant tag_bits    : integer := 32 - region_bits - offset_bits - index_bits;
+	constant boffset_bits : integer := 2;
+	constant region_bits  : integer := 32 - REGION_LD_LEN;
+	constant woffset_bits : integer := log2(MAX_LINE_SIZE);
+	constant index_bits   : integer := log2(CACHE_DEPTH) - log2(WAYNESS);
+	constant tag_bits     : integer := 32 - region_bits - boffset_bits - woffset_bits - index_bits;
 
 	-- address part types
-	subtype addr_region_t is std_logic_vector(region_bits - 1 downto 0);
-	subtype addr_offset_t is std_logic_vector(offset_bits - 1 downto 0);
-	subtype addr_index_t  is std_logic_vector(index_bits  - 1 downto 0);
-	subtype addr_tag_t    is std_logic_vector(tag_bits    - 1 downto 0);
+	subtype addr_region_t  is std_logic_vector(region_bits  - 1 downto 0);
+	subtype addr_boffset_t is std_logic_vector(boffset_bits - 1 downto 0);
+	subtype addr_index_t   is std_logic_vector(index_bits   - 1 downto 0);
+	subtype addr_tag_t     is std_logic_vector(tag_bits     - 1 downto 0);
+	subtype addr_woffset_t is std_logic_vector(woffset_bits - 1 downto 0);
 
-	subtype addr_line_t is std_logic_vector(31 downto offset_bits);
+	subtype addr_line_t is std_logic_vector(31 downto woffset_bits + boffset_bits);
 
 	-- selection types
 	subtype index_t  is integer range 0 to CACHE_DEPTH;
@@ -107,10 +109,17 @@ architecture behaviour of pp_dcache is
 	signal pt_was_we  : std_logic;
 
 	-- address split signals
-	signal addr_region : addr_region_t;
-	signal addr_offset, addr_offset_latched : addr_offset_t;
-	signal addr_index , addr_index_latched  : addr_index_t;
-	signal addr_tag   , addr_tag_latched    : addr_tag_t;
+	signal addr_latched   : std_logic_vector(31 downto 0);
+	signal addr_region    : addr_region_t;
+	signal addr_woffset   : addr_woffset_t;
+	signal addr_boffset   : addr_boffset_t;
+	signal addr_index     : addr_index_t;
+	signal addr_tag       : addr_tag_t;
+	signal addr_region_l  : addr_region_t;
+	signal addr_woffset_l : addr_woffset_t;
+	signal addr_boffset_l : addr_boffset_t;
+	signal addr_index_l   : addr_index_t;
+	signal addr_tag_l     : addr_tag_t;
 
 	-- signals for replace control
 	signal repl_way   : way_t;
@@ -126,7 +135,7 @@ architecture behaviour of pp_dcache is
 	signal line_index : index_t;
 	signal lookup_tag : addr_tag_t;
 	signal access_mask, access_mask_shifted : line_mask_t;
-	signal data_shifted : cache_line_t;
+	signal data, data_shifted : cache_line_t;
 
 	signal pol_finished : std_logic;
 	signal wb_start, wb_stop : offset_t;
@@ -134,7 +143,7 @@ architecture behaviour of pp_dcache is
 	signal wb_rbuffer_line, wb_wbuffer_line : cache_line_t;
 	signal wb_wtag : addr_tag_t;
 
-	type wb_mode_t is (IDLE, WRITE, READ);
+	type wb_mode_t is (IDLE, WRITE, READ, WRITE_WAIT, READ_WAIT);
 	signal wb_mode : wb_mode_t;
 	signal wb_tag  : addr_tag_t;
 	signal wb_mask : line_mask_t;
@@ -144,6 +153,10 @@ architecture behaviour of pp_dcache is
 	type active_pol_t is (DLFU, LRU);
 	signal active_pol : active_pol_t;
 
+	signal pol_update, normal_cycle, pol_replace, resp_rdata : std_logic;
+	signal pol_index : addr_index_t;
+	signal pol_way   : way_t;
+
 	-- dlfu policy signals
 	signal dlfu_repl : way_t;
 	
@@ -151,6 +164,9 @@ architecture behaviour of pp_dcache is
 	signal rdata, wdata : cache_line_t;
 	signal wmask  : line_mask_t;
 	signal aindex : index_t;
+
+	-- helper signal
+	signal index_h, index_r : index_t;
 
 	-- helper functions
 	function get_index(
@@ -161,10 +177,11 @@ architecture behaviour of pp_dcache is
 	end function;
 
 	function get_address(
-		entry : addr_index_t;
-		tag   : addr_tag_t
+		region : addr_region_t;
+		entry  : addr_index_t;
+		tag    : addr_tag_t
 	) return addr_line_t is begin
-		return REGION_BASE(31 downto REGION_LD_LEN) & tag & entry;
+		return region & tag & entry;
 	end function;
 
 	function get_mask(
@@ -177,6 +194,13 @@ architecture behaviour of pp_dcache is
 		end case;
 	end function;
 
+	function get_shift(
+		word : addr_woffset_t;
+		byte : addr_boffset_t
+	) return integer is begin
+		return to_integer(unsigned(word)) * 4 + to_integer(unsigned(byte));
+	end function;
+
 begin
 	assert is_pow2(MAX_LINE_SIZE) report "Cache line size must be a power of 2!" severity FAILURE;
 	assert is_pow2(CACHE_DEPTH) report "Cache depth must be a power of 2!" severity FAILURE;
@@ -186,44 +210,28 @@ begin
 	-----------------------------------
 	-- region | tag | index | offset --
 	-----------------------------------
-	addr_region <= mem_address(31 downto 32 - region_bits);
-	addr_tag    <= mem_address(31 - region_bits downto 32 - region_bits - tag_bits);
-	addr_index  <= mem_address(31 - region_bits - tag_bits downto 32 - region_bits - tag_bits - index_bits);
-	addr_offset <= mem_address(31 - region_bits - tag_bits - index_bits downto 32 - region_bits - tag_bits - index_bits - offset_bits);
+	addr_region  <= mem_address(31 downto 32 - region_bits);
+	addr_tag     <= mem_address(31 - region_bits downto 32 - region_bits - tag_bits);
+	addr_index   <= mem_address(31 - region_bits - tag_bits downto 32 - region_bits - tag_bits - index_bits);
+	addr_woffset <= mem_address(31 - region_bits - tag_bits - index_bits downto 32 - region_bits - tag_bits - index_bits - woffset_bits);
+	addr_boffset <= mem_address(31 - region_bits - tag_bits - index_bits - woffset_bits downto 0);
+	
+	addr_region_l  <= addr_latched(31 downto 32 - region_bits);
+	addr_tag_l     <= addr_latched(31 - region_bits downto 32 - region_bits - tag_bits);
+	addr_index_l   <= addr_latched(31 - region_bits - tag_bits downto 32 - region_bits - tag_bits - index_bits);
+	addr_woffset_l <= addr_latched(31 - region_bits - tag_bits - index_bits downto 32 - region_bits - tag_bits - index_bits - woffset_bits);
+	addr_boffset_l <= addr_latched(31 - region_bits - tag_bits - index_bits - woffset_bits downto 0);
 
-	mem_data_out <= hit_line_a(to_integer(unsigned(addr_offset_latched))) when main_state = READ_RESPOND else
-			wb_rbuffer_words(to_integer(unsigned(addr_offset_latched)));
-
-	ack_signals: process(main_state, wb_mode, pt_was_we) begin
-		case main_state is
-			when READ_RESPOND =>
-				mem_read_ack <= '1';
-				mem_write_ack <= '0';
-			when WRITE_RESPOND =>
-				mem_read_ack <= '0';
-				mem_write_ack <= '1';
-			when PASS_THROUGH_RESPOND =>
-				mem_read_ack  <= not pt_was_we;
-				mem_write_ack <= pt_was_we;
-			when others =>
-				mem_read_ack <= '0';
-				mem_write_ack <= '0';
-		end case;
-	end process ack_signals;
+	mem_data_out <= std_logic_vector(shift_right(unsigned(hit_line_a(to_integer(unsigned(addr_woffset_l)))), 8 * to_integer(unsigned(addr_boffset_l))));
 
 	in_segment <= '1' when addr_region = REGION_BASE(31 downto 32 - region_bits) else '0';
 	line_index <= get_index(addr_index, hit_way);
 
 	access_mask <= std_logic_vector(resize(unsigned(get_mask(mem_data_size)), 4 * MAX_LINE_SIZE));
-	access_mask_shifted <= std_logic_vector(
-		shift_left(unsigned(access_mask),
-			to_integer(unsigned(mem_address(1 downto 0))) +
-			to_integer(unsigned(addr_offset) * 4)));
-	data_shifted <= std_logic_vector(
-		shift_left(resize(unsigned(mem_data_in), 32 * MAX_LINE_SIZE),
-			to_integer(unsigned(mem_address(1 downto 0))) * 8 +
-			to_integer(unsigned(addr_offset) * 32)));
-	hit_line_shifted <= std_logic_vector(shift_left(unsigned(rdata), to_integer(unsigned(mem_address(1 downto 0))) * 8));
+	access_mask_shifted <= std_logic_vector(shift_left(unsigned(access_mask), get_shift(addr_woffset, addr_boffset)));
+	data <= std_logic_vector(resize(unsigned(mem_data_in), 32 * MAX_LINE_SIZE));
+	data_shifted <= std_logic_vector(shift_left(unsigned(data), get_shift(addr_woffset, addr_boffset) * 8));
+	hit_line_shifted <= rdata when resp_rdata = '1' else wb_rbuffer_line;
 
 	decompose_lines: for ii in 0 to MAX_LINE_SIZE - 1 generate
 		hit_line_a(ii) <= hit_line_shifted(32 * ii + 31 downto 32 * ii);
@@ -239,7 +247,7 @@ begin
 	begin
 		hit := '0';
 		way := 0;
-		for ii in 0 to WAYNESS loop
+		for ii in 0 to WAYNESS - 1 loop
 			if valid_a(get_index(addr_index, ii)) = '1' and tag_a(get_index(addr_index, ii)) = addr_tag then
 				hit := '1';
 				way := ii;
@@ -251,30 +259,32 @@ begin
 
 	wb_outputs.sel <= wb_mask_a(wb_start);
 
-	wb_outputs.adr <= get_address(addr_index, wb_tag) & std_logic_vector(to_unsigned(wb_start, addr_offset'length));
+	wb_outputs.adr <= get_address(addr_region_l, addr_index_l, wb_tag) & std_logic_vector(to_unsigned(wb_start, addr_woffset'length)) & b"00";
 	wb_outputs.dat <= wb_wbuffer_words(wb_start);
 
 	wb_signals: process(wb_mode) begin
-		case wb_mode is
-			when WRITE =>
-				wb_outputs.we  <= '1';
-				wb_outputs.cyc <= '1';
-				wb_outputs.stb <= '1';
-			when READ =>
-				wb_outputs.we  <= '0';
-				wb_outputs.cyc <= '1';
-				wb_outputs.stb <= '1';
-			when others =>
-				wb_outputs.we  <= '0';
-				wb_outputs.cyc <= '0';
-				wb_outputs.stb <= '0';
-		end case;
+		if wb_mode = WRITE or wb_mode = WRITE_WAIT
+		then wb_outputs.we <= '1';
+		else wb_outputs.we <= '0';
+		end if;
+
+		if wb_mode = IDLE
+		then wb_outputs.cyc <= '0';
+		else wb_outputs.cyc <= '1';
+		end if;
+
+		if wb_mode = WRITE or wb_mode = READ
+		then wb_outputs.stb <= '1';
+		else wb_outputs.stb <= '0';
+		end if;
 	end process wb_signals;
+
+	aindex <= index_r when main_state = REFILL else index_h;
 	
 	operator: process(clk) begin
 		if rising_edge(clk) then
 			rdata <= data_a(aindex);
-			for ii in 0 to MAX_LINE_SIZE - 1 loop
+			for ii in 0 to MAX_LINE_SIZE * 4 - 1 loop
 				if wmask(ii) = '1' then
 					data_a(aindex)(8 * (ii + 1) - 1 downto 8 * ii) <= wdata(8 * (ii + 1) - 1 downto 8 * ii);
 				end if;
@@ -282,26 +292,33 @@ begin
 		end if;
 	end process operator;
 
-	controller: process(clk)
-		variable index_r, index_h: index_t;
-	begin
-		index_r := get_index(addr_index, repl_way);
-		index_h := get_index(addr_index, hit_way);
-		
+	index_r <= get_index(addr_index, repl_way);
+	index_h <= get_index(addr_index, hit_way);
+
+	controller: process(clk) begin
 		if rising_edge(clk) then
 			if reset = '1' then
 				main_state <= IDLE;
 				wb_mode <= IDLE;
 				wmask <= (others => '0');
+				valid_a <= (others => '0');
+				normal_cycle <= '1';
+				resp_rdata   <= '0';
 			else
 			
 				case wb_mode is
-					when IDLE => wb_mode <= IDLE;
+					when IDLE       => wb_mode <= IDLE;
+					when READ_WAIT  => wb_mode <= READ;
+					when WRITE_WAIT => wb_mode <= WRITE;
 					when others =>
 						if wb_inputs.ack = '1' then
 							if wb_start = wb_stop then
 								wb_mode <= IDLE;
 							else
+								if wb_mode = WRITE
+								then wb_mode <= WRITE_WAIT;
+								else wb_mode <= READ_WAIT;
+								end if;
 								wb_start <= wb_start + 1;
 							end if;
 							wb_rbuffer_words(wb_start) <= wb_inputs.dat;
@@ -310,17 +327,19 @@ begin
 
 				case main_state is
 					when IDLE =>
+						normal_cycle  <= '1';
+						resp_rdata    <= '0';
+						mem_read_ack  <= '0';
+						mem_write_ack <= '0';
 						if mem_read_req = '1' or mem_write_req = '1' then -- pseudo-transition to addr-decode
-							addr_tag_latched    <= addr_tag;
-							addr_index_latched  <= addr_index;
-							addr_offset_latched <= addr_offset;
-							if in_segment = '0' then
-								wb_start <= to_integer(unsigned(addr_offset));
-								wb_stop  <= to_integer(unsigned(addr_offset));
+							addr_latched <= mem_address;
+							if in_segment = '0' then -- pass-through
+								wb_start <= to_integer(unsigned(addr_woffset));
+								wb_stop  <= to_integer(unsigned(addr_woffset));
 								wb_tag   <= addr_tag;
 								wb_mask  <= access_mask_shifted;
 
-								wb_wbuffer_line <= std_logic_vector(resize(unsigned(data_shifted), 32 * MAX_LINE_SIZE) sll (to_integer(unsigned(addr_offset)) * 32));
+								wb_wbuffer_line <= data_shifted;
 
 								if mem_read_req = '1' then
 									wb_mode <= READ;
@@ -332,8 +351,6 @@ begin
 							elsif mem_read_req = '1' then
 								need_wb <= '0';
 								if cache_hit = '1' then
-									aindex <= index_h;
-
 									main_state <= READ_RESPOND;
 								else
 									wb_tag <= addr_tag;
@@ -349,16 +366,15 @@ begin
 								if cache_hit = '1' then
 									wdata <= data_shifted;
 									wmask <= access_mask_shifted;
-									aindex <= index_h;
 									
 									main_state <= WRITE_RESPOND;
-								else
-									wb_start <= to_integer(unsigned(addr_offset));
-									wb_stop  <= to_integer(unsigned(addr_offset));
+								else -- pass-through
+									wb_start <= to_integer(unsigned(addr_woffset));
+									wb_stop  <= to_integer(unsigned(addr_woffset));
 									wb_tag   <= addr_tag;
 									wb_mask  <= access_mask_shifted;
 				
-									wb_wbuffer_line <= std_logic_vector(resize(unsigned(data_shifted), 32 * MAX_LINE_SIZE) sll (to_integer(unsigned(addr_offset)) * 32));
+									wb_wbuffer_line <= data_shifted;
 				
 									wb_mode <= WRITE;
 
@@ -371,13 +387,17 @@ begin
 						if need_wb = '1' then
 							main_state <= WRITE_BACK;
 						else
+							mem_read_ack <= '1';
+							resp_rdata   <= '1';
 							main_state <= IDLE;
 						end if;
 					when WRITE_BACK =>
 						if wb_mode = IDLE then
+							mem_read_ack <= '1';
 							main_state <= IDLE;
 						end if;
 					when REFILL =>
+						normal_cycle <= '0';
 						if wb_mode = IDLE and pol_finished = '1' then
 							if valid_a(index_r) = '1' and meta_a(index_r).dirty = '1' then
 								wb_tag <= tag_a(index_r);
@@ -392,12 +412,11 @@ begin
 								crtl_aux <= '0';
 							end if;
 						
-							tag_a  (index_r) <= addr_tag;
+							tag_a  (index_r) <= addr_tag_l;
 							meta_a (index_r).dirty <= '0';
 							valid_a(index_r) <= '1';
 							wdata <= wb_rbuffer_line;
 							wmask <= (others => '1');
-							aindex <= index_r;
 							
 							main_state <= REPLACE;
 						end if;
@@ -413,6 +432,7 @@ begin
 					when WRITE_RESPOND =>
 						wmask <= (others => '0');
 						meta_a(index_h).dirty <= '1';
+						mem_write_ack <= '1';
 
 						main_state <= IDLE;
 
@@ -422,11 +442,18 @@ begin
 							main_state <= PASS_THROUGH_RESPOND;
 						end if;
 					when PASS_THROUGH_RESPOND =>
+						mem_read_ack  <= not pt_was_we;
+						mem_write_ack <= pt_was_we;
 						main_state <= IDLE;
 				end case;
 			end if;
 		end if;
 	end process controller;
+
+	pol_update  <= normal_cycle when main_state = READ_RESPOND or main_state = WRITE_RESPOND else '0';
+	pol_replace <= '1' when main_state = REPLACE else '0';
+	pol_index   <= addr_index_l;
+	pol_way     <= repl_way when main_state = REPLACE else hit_way;
 
 	active_pol <= LRU;
 	

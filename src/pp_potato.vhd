@@ -37,6 +37,9 @@ entity pp_potato is
 
 		-- Test interface:
 		test_context_out : out test_context;
+		
+		-- Debug interface
+		debug_vector : out std_logic_vector(31 downto 0);
 
 		-- Wishbone interface:
 		wb_adr_out : out std_logic_vector(31 downto 0);
@@ -91,6 +94,9 @@ begin
 			imem_data_in => imem_data,
 			imem_req => imem_req,
 			imem_ack => imem_ack,
+			
+			debug_vector => debug_vector,
+			
 			dmem_address => dmem_address,
 			dmem_data_in => dmem_data_in,
 			dmem_data_out => dmem_data_out,
@@ -178,6 +184,7 @@ begin
 			) port map (
 				clk           => clk,
 				reset         => reset,
+				
 				mem_address   => dmem_address,
 				mem_data_in   => dmem_data_out,
 				mem_data_out  => dmem_data_in,
