@@ -79,6 +79,7 @@ begin
 				wb_outputs.cyc <= '0';
 				wb_outputs.stb <= '0';
 				mem_r_ack <= '0';
+				mem_data_out <= (others => '0');
 			else
 				case state is
 					when IDLE =>

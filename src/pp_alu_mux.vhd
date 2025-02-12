@@ -19,7 +19,7 @@ entity pp_alu_mux is
 		pc_value        : in std_logic_vector(31 downto 0);
 		csr_value       : in std_logic_vector(31 downto 0);
 
-		output : out std_logic_vector(31 downto 0)
+		output_value : out std_logic_vector(31 downto 0)
 	);
 end entity pp_alu_mux;
 
@@ -30,19 +30,19 @@ begin
 	begin
 		case source is
 			when ALU_SRC_REG =>
-				output <= register_value;
+				output_value <= register_value;
 			when ALU_SRC_IMM =>
-				output <= immediate_value;
+				output_value <= immediate_value;
 			when ALU_SRC_PC =>
-				output <= pc_value;
+				output_value <= pc_value;
 			when ALU_SRC_PC_NEXT =>
-				output <= std_logic_vector(unsigned(pc_value) + 4);
+				output_value <= std_logic_vector(unsigned(pc_value) + 4);
 			when ALU_SRC_CSR =>
-				output <= csr_value;
+				output_value <= csr_value;
 			when ALU_SRC_SHAMT =>
-				output <= (31 downto 5 => '0') & shamt_value;
+				output_value <= (31 downto 5 => '0') & shamt_value;
 			when ALU_SRC_NULL =>
-				output <= (others => '0');
+				output_value <= (others => '0');
 		end case;
 	end process mux;
 

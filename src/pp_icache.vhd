@@ -130,6 +130,9 @@ begin
 		end if;
 	end process tag_lookup;
 
+	wb_outputs.we  <= '0';
+	wb_outputs.dat <= (others => '0');
+
 	controller: process(clk)
 	begin
 		if rising_edge(clk) then
@@ -145,7 +148,6 @@ begin
 						if mem_read_req = '1' and cache_hit = '0' then
 							wb_outputs.adr <= mem_address_in(31 downto log2(LINE_SIZE * 4)) & (log2(LINE_SIZE * 4) - 1 downto 0 => '0');
 							wb_outputs.cyc <= '1';
-							wb_outputs.we <= '0';
 							wb_outputs.sel <= (others => '1');
 							load_buffer_tag <= input_address_tag;
 							cl_load_address <= mem_address_in(31 downto log2(LINE_SIZE * 4));
@@ -157,7 +159,6 @@ begin
 						state <= IDLE;
 					when LOAD_CACHELINE_START =>
 						wb_outputs.stb <= '1';
-						wb_outputs.we <= '0';
 						wb_outputs.adr <= cl_load_address & std_logic_vector(to_unsigned(cl_current_word, log2(LINE_SIZE))) & b"00";
 						state <= LOAD_CACHELINE_WAIT_ACK;
 					when LOAD_CACHELINE_WAIT_ACK =>

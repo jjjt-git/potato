@@ -46,6 +46,10 @@ entity pp_csr_unit is
 		-- Interrupts originating from this unit:
 		software_interrupt_out : out std_logic;
 		timer_interrupt_out    : out std_logic;
+		
+		-- Cache control
+		policy_select : out std_logic_vector(1 downto 0);
+		invalidate : out std_logic;
 
 		-- Registers needed for exception handling, always read:
 		mie_out         : out std_logic_vector(31 downto 0);
@@ -83,12 +87,18 @@ architecture behaviour of pp_csr_unit is
 
 	-- Test and debug register:
 	signal test_register : test_context;
+	
+	-- cache
+	signal cache_control : std_logic_vector(2 downto 0);
 
 	-- Interrupt signals:
 	signal timer_interrupt    : std_logic;
 	signal software_interrupt : std_logic;
 
 begin
+
+	policy_select <= cache_control(2 downto 1);
+	invalidate <= cache_control(0);
 
 	-- Interrupt signals:
 	software_interrupt_out <= software_interrupt;
@@ -157,6 +167,7 @@ begin
 				mtvec <= (others => '0');
 				mepc <= (others => '0');
 				mie <= (others => '0');
+				cache_control <= (others => '0');
 				ie <= '0';
 				ie1 <= '0';
 				test_register <= (TEST_IDLE, (others => '0'));
@@ -166,6 +177,10 @@ begin
 					ie1 <= exception_context.ie1;
 					mcause <= exception_context.cause;
 					mbadaddr <= exception_context.badaddr;
+				end if;
+				
+				if write_mode = CSR_WRITE_NONE or (write_address /= CSR_CACHE) then
+					cache_control(0) <= '0';
 				end if;
 
 				if write_mode /= CSR_WRITE_NONE then
@@ -189,6 +204,8 @@ begin
 							software_interrupt <= write_data_in(CSR_MIP_MSIP);
 						when CSR_TEST => -- Test and debug register:
 							test_register <= std_logic_to_test_context(write_data_in);
+						when CSR_CACHE =>
+							cache_control <= write_data_in(2 downto 0);
 						when others =>
 							-- Ignore writes to invalid or read-only registers
 					end case;
@@ -266,6 +283,9 @@ begin
 						read_data_out <= counter_instret(31 downto 0);
 					when CSR_INSTRETH =>
 						read_data_out <= counter_instret(63 downto 32);
+						
+					when CSR_CACHE =>
+						read_data_out <= std_logic_vector(resize(unsigned(cache_control), read_data_out'length));
 
 					-- Potato extensions:
 					when CSR_TEST =>

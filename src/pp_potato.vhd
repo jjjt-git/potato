@@ -49,7 +49,10 @@ entity pp_potato is
 		wb_we_out  : out std_logic;
 		wb_dat_out : out std_logic_vector(31 downto 0);
 		wb_dat_in  : in  std_logic_vector(31 downto 0);
-		wb_ack_in  : in  std_logic
+		wb_ack_in  : in  std_logic;
+		
+		cache_enable : in std_logic;
+		cache_crtl : in  std_logic_vector(1 downto 0)
 	);
 end entity pp_potato;
 
@@ -69,6 +72,10 @@ architecture behaviour of pp_potato is
 	signal dmem_read_ack  : std_logic;
 	signal dmem_write_req : std_logic;
 	signal dmem_write_ack : std_logic;
+	
+	-- dcache control
+	signal dcache_inval : std_logic;
+	signal dcache_polcrtl : std_logic_vector(1 downto 0);
 
 	-- Wishbone signals:
 	signal icache_inputs, dmem_if_inputs   : wishbone_master_inputs;
@@ -96,6 +103,9 @@ begin
 			imem_ack => imem_ack,
 			
 			debug_vector => debug_vector,
+			
+			dcache_inval => dcache_inval,
+			dcache_polcrtl => dcache_polcrtl,
 			
 			dmem_address => dmem_address,
 			dmem_data_in => dmem_data_in,
@@ -194,7 +204,11 @@ begin
 				mem_write_req => dmem_write_req,
 				mem_write_ack => dmem_write_ack,
 				wb_inputs     => dmem_if_inputs,
-				wb_outputs    => dmem_if_outputs
+				wb_outputs    => dmem_if_outputs,
+				
+				global_enable => cache_enable,
+				inval         => dcache_inval,
+				crtl          => cache_crtl
 			);
 	end generate dcache_enabled;
 

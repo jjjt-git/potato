@@ -375,7 +375,7 @@ begin
 			shamt_value => shamt,
 			pc_value => pc,
 			csr_value => csr_value,
-			output => alu_x
+			output_value => alu_x
 		);
 
 	alu_y_mux: entity work.pp_alu_mux
@@ -386,32 +386,17 @@ begin
 			shamt_value => shamt,
 			pc_value => pc,
 			csr_value => csr_value,
-			output => alu_y
+			output_value => alu_y
 		);
 
-	alu_x_forward: process(mem_rd_write, mem_rd_value, mem_rd_addr, rs1_addr,
-		rs1_data, wb_rd_write, wb_rd_addr, wb_rd_value)
-	begin
-		if mem_rd_write = '1' and mem_rd_addr = rs1_addr and mem_rd_addr /= b"00000" then
-			rs1_forwarded <= mem_rd_value;
-		elsif wb_rd_write = '1' and wb_rd_addr = rs1_addr and wb_rd_addr /= b"00000" then
-			rs1_forwarded <= wb_rd_value;
-		else
-			rs1_forwarded <= rs1_data;
-		end if;
-	end process alu_x_forward;
 
-	alu_y_forward: process(mem_rd_write, mem_rd_value, mem_rd_addr, rs2_addr,
-		rs2_data, wb_rd_write, wb_rd_addr, wb_rd_value)
-	begin
-		if mem_rd_write = '1' and mem_rd_addr = rs2_addr and mem_rd_addr /= b"00000" then
-			rs2_forwarded <= mem_rd_value;
-		elsif wb_rd_write = '1' and wb_rd_addr = rs2_addr and wb_rd_addr /= b"00000" then
-			rs2_forwarded <= wb_rd_value;
-		else
-			rs2_forwarded <= rs2_data;
-		end if;
-	end process alu_y_forward;
+	rs1_forwarded <= mem_rd_value when mem_rd_write = '1' and mem_rd_addr = rs1_addr and mem_rd_addr /= b"00000" else
+			 wb_rd_value  when wb_rd_write  = '1' and wb_rd_addr  = rs1_addr and wb_rd_addr  /= b"00000" else
+			 rs1_data;
+
+	rs2_forwarded <= mem_rd_value when mem_rd_write = '1' and mem_rd_addr = rs2_addr and mem_rd_addr /= b"00000" else
+			 wb_rd_value  when wb_rd_write  = '1' and wb_rd_addr  = rs2_addr and wb_rd_addr  /= b"00000" else
+			 rs2_data;
 
 	detect_csr_hazard: process(mem_csr_write, wb_csr_write, mem_exception, wb_exception)
 	begin

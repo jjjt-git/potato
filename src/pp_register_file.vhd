@@ -42,6 +42,7 @@ begin
 		if rising_edge(clk) then
 				if rd_write = '1' and rd_addr /= b"00000" then
 					registers(to_integer(unsigned(rd_addr))) := rd_data;
+					--report "write " & to_hstring(rd_data) & " to reg " & integer'image(to_integer(unsigned(rd_addr)));
 				end if;
 
 				rs1_data <= registers(to_integer(unsigned(rs1_addr)));

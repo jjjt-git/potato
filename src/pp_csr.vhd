@@ -65,6 +65,8 @@ package pp_csr is
 	constant CSR_MCAUSE   : csr_address := x"342";
 	constant CSR_MBADADDR : csr_address := x"343";
 	constant CSR_MIP      : csr_address := x"344";
+	
+	constant CSR_CACHE    : csr_address := x"BFF";
 
 	constant CSR_TEST : csr_address := x"bf0";
 

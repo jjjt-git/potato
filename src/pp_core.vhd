@@ -47,7 +47,11 @@ entity pp_core is
 		debug_vector : out std_logic_vector(31 downto 0);
 
 		-- External interrupt input:
-		irq : in std_logic_vector(7 downto 0) --! IRQ inputs.
+		irq : in std_logic_vector(7 downto 0); --! IRQ inputs.
+
+		-- dcache control
+		dcache_inval : out std_logic;
+		dcache_polcrtl : out std_logic_vector(1 downto 0)
 	);
 end entity pp_core;
 
@@ -163,29 +167,33 @@ architecture behaviour of pp_core is
 
 begin
 
-	write_logging: process
-		variable adr, data : std_logic_vector(31 downto 0);
-		variable size : std_logic_vector(1 downto 0);
-	begin
-		wait until dmem_write_req = '1';
-		adr  := dmem_address;
-		data := dmem_data_out;
-		size := dmem_data_size;
-		wait until dmem_write_ack = '1';
-		report "write " & to_hstring(data) & "@" & to_hstring(adr) & "(" & to_hstring(size) & ")";
-	end process write_logging;
-
-	read_logging: process
-		variable adr, data : std_logic_vector(31 downto 0);
-		variable size : std_logic_vector(1 downto 0);
-	begin
-		wait until dmem_read_req = '1';
-		adr  := dmem_address;
-		size := dmem_data_size;
-		wait until dmem_read_ack = '1';
-		data := dmem_data_in;
-		report "read " & to_hstring(data) & "@" & to_hstring(adr) & "(" & to_hstring(size) & ")";
-	end process read_logging;
+	--write_logging: process
+	--	variable adr, data : std_logic_vector(31 downto 0);
+	--	variable size : std_logic_vector(1 downto 0);
+	--begin
+	--	wait until dmem_write_req = '1';
+	--	wait until falling_edge(clk);
+	--	adr  := dmem_address;
+	--	data := dmem_data_out;
+	--	size := dmem_data_size;
+	--	wait until dmem_write_ack = '1';
+	--	wait until falling_edge(clk);
+	--	report "write " & to_hstring(data) & "@" & to_hstring(adr) & "(" & to_hstring(size) & ")";
+	--end process write_logging;
+	--
+	--read_logging: process
+	--	variable adr, data : std_logic_vector(31 downto 0);
+	--	variable size : std_logic_vector(1 downto 0);
+	--begin
+	--	wait until dmem_read_req = '1';
+	--	wait until falling_edge(clk);
+	--	adr  := dmem_address;
+	--	size := dmem_data_size;
+	--	wait until dmem_read_ack = '1';
+	--	wait until falling_edge(clk);
+	--	data := dmem_data_in;
+	--	report "read " & to_hstring(data) & "@" & to_hstring(adr) & "(" & to_hstring(size) & ")";
+	--end process read_logging;
 
 	debug_vector <= (0 => id_exception,
 		1 => software_interrupt,
@@ -229,7 +237,10 @@ begin
 				ie_out => ie,
 				ie1_out => ie1,
 				software_interrupt_out => software_interrupt,
-				timer_interrupt_out => timer_interrupt
+				timer_interrupt_out => timer_interrupt,
+				
+				invalidate => dcache_inval,
+				policy_select => dcache_polcrtl
 			);
 
 	csr_read_address <= id_csr_address when stall_ex = '0' else csr_read_address_p;
