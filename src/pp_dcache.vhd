@@ -162,6 +162,7 @@ architecture behaviour of pp_dcache is
 
 	-- signals for replace control
 	signal repl_way   : way_t;
+	signal pol_tag    : addr_tag_t;
 
 	-- controller signals
 	type main_state_t is (IDLE,
@@ -546,6 +547,7 @@ begin
 	pol_update  <= normal_cycle when main_state = READ_RESPOND or main_state = WRITE_RESPOND else '0';
 	pol_replace <= '1' when main_state = REPLACE else '0';
 	pol_index   <= addr_index_l;
+	pol_tag     <= addr_tag_l;
 	pol_way     <= repl_way when main_state = REPLACE else hit_way;
 	
 	policy_sel: process(crtl, dlfu_repl, lru_repl, pol_adapt)
@@ -617,8 +619,9 @@ begin
 						if wb_end_tick = '1' then -- need to update active history
 							for ii in 0 to pol_adapt_ptr_t'high loop
 								-- three cases:
-								-- I   write-out/read-in of line in history -> mark as refetched
+								-- I   write-out/read-in of line in history     -> mark as refetched
 								-- II  write-out/read-in of line not in history -> do nothing
+								-- III access to line in history                -> mark as refetched (would have caused refetch if followed)
 								if wb_tag = pol_adapt(pid).history(ii) then -- I
 									pol_adapt(pid).refetched(ii) <= '1';
 								end if; -- else would be II
@@ -630,6 +633,12 @@ begin
 							pol_adapt(pid).refetched(nxt) <= '0';
 							pol_adapt(pid).nxt <= (nxt + 1) mod (pol_adapt_ptr_t'high + 1);
 						end if;
+					elsif pol_update = '1' then
+						for ii in 0 to pol_adapt_ptr_t'high loop
+							if pol_tag = pol_adapt(pid).history(ii) then
+								pol_adapt(pid).refetched(ii) <= '1';
+							end if;
+						end loop;
 					end if;
 				end if;
 			end loop;
@@ -674,8 +683,8 @@ begin
 			
 			if rising_edge(clk) then
 				if pol_update = '1' or pol_replace = '1' then
-					for ii in 0 to way_t'high loop -- group counter mngt
-						index := get_index(pol_index, ii);
+--					for ii in 0 to way_t'high loop -- group counter mngt
+						index := get_index(pol_index, 0); -- no loop as group_c is equal across physical sets
 						-- three cases:
 						-- I   empty          => 0 -> counter
 						-- II  counter at max => 0 -> counter
@@ -685,7 +694,7 @@ begin
 						else
 							meta_a_dlfu(index).group_c <= meta_a_dlfu(index).group_c + 1;
 						end if;
-					end loop;
+--					end loop;
 					
 					for ii in 0 to way_t'high loop -- line counter loop
 						index := get_index(pol_index, ii);

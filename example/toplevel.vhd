@@ -4,29 +4,38 @@
 
 library ieee;
 use ieee.std_logic_1164.all;
+use IEEE.math_real.all;
 
 -- This is a SoC design for the Arty or Nexys development board. It has the following memory layout:
 --
--- 0x00000000: Main memory (128 kB)
+-- 0x00000000: Main memory (16 kB)
 -- 0xc0000000: Timer0
--- 0xc0001000: Timer1
+-- 0xc0001000: Timer1 (disabled)
 -- 0xc0002000: UART (for host communication)
--- 0xc0004000: GPIO0
+-- 0xc0004000: GPIO0 (disabled)
 -- 0xc0005000: Interconnect control/error module
+-- 0xf0000000: Main memory uncached mapping
 -- 0xffff8000: Application execution environment ROM (16 kB)
 -- 0xffffc000: Application execution environment RAM (16 kB)
 entity toplevel is
 	generic(
-		ICACHE_ENABLE          : boolean                       := true;        --! Whether to enable the instruction cache.                                                                                                                                          
-		ICACHE_LINE_SIZE       : natural                       := 4;           --! Number of words per instruction cache line.                                                                                                                                       
-		ICACHE_NUM_LINES       : natural                       := 128;         --! Number of cache lines in the instruction cache.                                                                                                                                   
-		DCACHE_ENABLE          : boolean                       := false;        --! Whether to enable the data cache.                                                                                                                                                 
-		DCACHE_REGION_BASE     : std_logic_vector(31 downto 0) := x"00000000"; --! The base address of the cached region.                                                                                                                                            
-		DCACHE_REGION_LD_LEN   : natural                       := 20;          --! The binary logarithm of the size of the cached region, i.e. the length of the address-offset.                                                                                     
-		DCACHE_MAX_LINE_SIZE   : natural                       := 8;           --! Maximum number of words per data cache line.                                                                                                                                      
-		DCACHE_CACHE_DEPTH     : natural                       := 128;         --! Number of cache lines in the data cache.                                                                                                                                          
-		DCACHE_HAS_DLFU        : boolean                       := true;        --! Whether to enable the DLFU policy.                                                                                                                                                
-		DCACHE_DLFU_RATE       : natural                       := 32           --! Number of accesses to a set before every counter in the set is halfed. 
+		RESET_VECTOR           : std_logic_vector(31 downto 0) := x"00000000";
+		MEMORY_SIZE            : natural := 65536;
+		MEMORY_LATENCY         : natural := 4;
+		MEMORY_INIT_FILE       : string := "/home/jacob/Projects/Studium/Beleg/benchmarks/matmul.mem";
+		ICACHE_ENABLE          : boolean                       := true;        --! Whether to enable the instruction cache.
+		ICACHE_LINE_SIZE       : natural                       := 4;           --! Number of words per instruction cache line.
+		ICACHE_NUM_LINES       : natural                       := 128;         --! Number of cache lines in the instruction cache.
+		DCACHE_ENABLE          : boolean                       := true;        --! Whether to enable the data cache.
+		DCACHE_REGION_BASE     : std_logic_vector(31 downto 0) := x"00000000"; --! The base address of the cached region.
+		DCACHE_REGION_LD_LEN   : natural                       := 17;          --! The binary logarithm of the size of the cached region, i.e. the length of the address-offset.
+		DCACHE_HAS_DLFU        : boolean                       := true;        --! Whether to enable the DLFU policy.
+		DCACHE_DLFU_RATE       : natural                       := 32;          --! Number of accesses to a set before every counter in the set is halfed.
+		
+		DCACHE_MAX_LINE_SIZE   : natural                       := 16;           --! Maximum number of words per data cache line.
+		DCACHE_CACHE_DEPTH     : natural                       := 128;         --! Number of cache lines in the data cache.
+		DCACHE_WAYNESS         : natural                       := 16;
+		DCACHE_HISTORY_LENGTH  : natural                       := 32
 	);
 	port(
 		clk     : in  std_logic;
@@ -36,15 +45,26 @@ entity toplevel is
 		-- 4x LEDs        (bits 11 downto 8)
 		-- 4x Switches    (bits  7 downto 4)
 		-- 4x Buttons     (bits  3 downto 0)
-		gpio_pins : inout std_logic_vector(11 downto 0);
+		--gpio_pins : inout std_logic_vector(11 downto 0);
+		
+		-- crtl
+		global_en : in std_logic;
+		dlfu_en   : in std_logic;
+		lru_en    : in std_logic;
+		global_st : out std_logic;
+		dlfu_st   : out std_logic;
+		lru_st    : out std_logic;
 
 		-- UART0 signals:
+		uart0_cts : out std_logic;
 		uart0_txd : out std_logic;
 		uart0_rxd : in  std_logic;
 
 		-- UART1 signals:
 		uart1_txd : out std_logic;
-		uart1_rxd : in  std_logic
+		uart1_rxd : in  std_logic;
+		
+		debug : out std_logic_vector(11 downto 0)
 	);
 end entity toplevel;
 
@@ -52,6 +72,7 @@ architecture behaviour of toplevel is
 
 	-- Reset signals:
 	signal reset : std_logic;
+	signal force_reset : std_logic;
 
 	-- Internal clock signals:
 	signal system_clk : std_logic;
@@ -81,22 +102,22 @@ architecture behaviour of toplevel is
 	signal processor_ack_in  : std_logic;
 
 	-- Timer0 signals:
-	signal timer0_adr_in : std_logic_vector(11 downto 0);
-	signal timer0_dat_in : std_logic_vector(31 downto 0);
-	signal timer0_dat_out : std_logic_vector(31 downto 0);
-	signal timer0_cyc_in : std_logic;
-	signal timer0_stb_in : std_logic;
-	signal timer0_we_in : std_logic;
-	signal timer0_ack_out : std_logic;
+--	signal timer0_adr_in : std_logic_vector(11 downto 0);
+--	signal timer0_dat_in : std_logic_vector(31 downto 0);
+--	signal timer0_dat_out : std_logic_vector(31 downto 0);
+--	signal timer0_cyc_in : std_logic;
+--	signal timer0_stb_in : std_logic;
+--	signal timer0_we_in : std_logic;
+--	signal timer0_ack_out : std_logic;
 
 	-- Timer1 signals:
-	signal timer1_adr_in : std_logic_vector(11 downto 0);
-	signal timer1_dat_in : std_logic_vector(31 downto 0);
-	signal timer1_dat_out : std_logic_vector(31 downto 0);
-	signal timer1_cyc_in : std_logic;
-	signal timer1_stb_in : std_logic;
-	signal timer1_we_in : std_logic;
-	signal timer1_ack_out : std_logic;
+--	signal timer1_adr_in : std_logic_vector(11 downto 0);
+--	signal timer1_dat_in : std_logic_vector(31 downto 0);
+--	signal timer1_dat_out : std_logic_vector(31 downto 0);
+--	signal timer1_cyc_in : std_logic;
+--	signal timer1_stb_in : std_logic;
+--	signal timer1_we_in : std_logic;
+--	signal timer1_ack_out : std_logic;
 
 	-- UART0 signals:
 	signal uart0_adr_in  : std_logic_vector(11 downto 0);
@@ -108,22 +129,22 @@ architecture behaviour of toplevel is
 	signal uart0_ack_out : std_logic;
 
 	-- UART1 signals:
-	signal uart1_adr_in  : std_logic_vector(11 downto 0);
-	signal uart1_dat_in  : std_logic_vector( 7 downto 0);
-	signal uart1_dat_out : std_logic_vector( 7 downto 0);
-	signal uart1_cyc_in  : std_logic;
-	signal uart1_stb_in  : std_logic;
-	signal uart1_we_in   : std_logic;
-	signal uart1_ack_out : std_logic;
+--	signal uart1_adr_in  : std_logic_vector(11 downto 0);
+--	signal uart1_dat_in  : std_logic_vector( 7 downto 0);
+--	signal uart1_dat_out : std_logic_vector( 7 downto 0);
+--	signal uart1_cyc_in  : std_logic;
+--	signal uart1_stb_in  : std_logic;
+--	signal uart1_we_in   : std_logic;
+--	signal uart1_ack_out : std_logic;
 
 	-- GPIO signals:
-	signal gpio_adr_in  : std_logic_vector(11 downto 0);
-	signal gpio_dat_in  : std_logic_vector(31 downto 0);
-	signal gpio_dat_out : std_logic_vector(31 downto 0);
-	signal gpio_cyc_in  : std_logic;
-	signal gpio_stb_in  : std_logic;
-	signal gpio_we_in   : std_logic;
-	signal gpio_ack_out : std_logic;
+--	signal gpio_adr_in  : std_logic_vector(11 downto 0);
+--	signal gpio_dat_in  : std_logic_vector(31 downto 0);
+--	signal gpio_dat_out : std_logic_vector(31 downto 0);
+--	signal gpio_cyc_in  : std_logic;
+--	signal gpio_stb_in  : std_logic;
+--	signal gpio_we_in   : std_logic;
+--	signal gpio_ack_out : std_logic;
 
 	-- Interconnect control module:
 	signal intercon_adr_in  : std_logic_vector(11 downto 0);
@@ -145,22 +166,22 @@ architecture behaviour of toplevel is
 	signal error_ack_out : std_logic;
 
 	-- AEE ROM signals:
-	signal aee_rom_adr_in  : std_logic_vector(13 downto 0);
-	signal aee_rom_dat_out : std_logic_vector(31 downto 0);
-	signal aee_rom_cyc_in  : std_logic;
-	signal aee_rom_stb_in  : std_logic;
-	signal aee_rom_sel_in  : std_logic_vector(3 downto 0);
-	signal aee_rom_ack_out : std_logic;
+--	signal aee_rom_adr_in  : std_logic_vector(13 downto 0);
+--	signal aee_rom_dat_out : std_logic_vector(31 downto 0);
+--	signal aee_rom_cyc_in  : std_logic;
+--	signal aee_rom_stb_in  : std_logic;
+--	signal aee_rom_sel_in  : std_logic_vector(3 downto 0);
+--	signal aee_rom_ack_out : std_logic;
 
 	-- AEE RAM signals:
-	signal aee_ram_adr_in  : std_logic_vector(13 downto 0);
-	signal aee_ram_dat_in  : std_logic_vector(31 downto 0);
-	signal aee_ram_dat_out : std_logic_vector(31 downto 0);
-	signal aee_ram_cyc_in  : std_logic;
-	signal aee_ram_stb_in  : std_logic;
-	signal aee_ram_sel_in  : std_logic_vector(3 downto 0);
-	signal aee_ram_we_in   : std_logic;
-	signal aee_ram_ack_out : std_logic;
+--	signal aee_ram_adr_in  : std_logic_vector(13 downto 0);
+--	signal aee_ram_dat_in  : std_logic_vector(31 downto 0);
+--	signal aee_ram_dat_out : std_logic_vector(31 downto 0);
+--	signal aee_ram_cyc_in  : std_logic;
+--	signal aee_ram_stb_in  : std_logic;
+--	signal aee_ram_sel_in  : std_logic_vector(3 downto 0);
+--	signal aee_ram_we_in   : std_logic;
+--	signal aee_ram_ack_out : std_logic;
 
 	-- Main memory signals:
 	signal main_memory_adr_in  : std_logic_vector(16 downto 0);
@@ -182,14 +203,26 @@ architecture behaviour of toplevel is
 
 	-- Interconnect address decoder state:
 	signal intercon_busy : boolean := false;
+	
+	-- core debug
+	signal debug_vector : std_logic_vector(31 downto 0);
+	
+	signal cache_crtl : std_logic_vector(1 downto 0);
 
 begin
+	debug <= (others => '0');
+	uart1_txd <= '0';
+	
+	cache_crtl(1) <= dlfu_en;
+	cache_crtl(0) <= lru_en;
+	
+	global_st <= global_en;
+	dlfu_st <= dlfu_en;
+	lru_st  <= lru_en;
 
 	irq_array <= (
 			IRQ_TIMER0_INDEX => timer0_irq,
-			IRQ_TIMER1_INDEX => timer1_irq,
 			IRQ_UART0_INDEX => uart0_irq,
-			IRQ_UART1_INDEX => uart1_irq,
 			IRQ_BUS_ERROR_INDEX => intercon_irq_bus_error,
 			others => '0'
 		);
@@ -206,31 +239,33 @@ begin
 						intercon_busy <= true;
 
 						if processor_adr_out(31 downto 16) = x"0000"
-							or processor_adr_out(31 downto 16) = x"0001" then -- Main memory space
+							or processor_adr_out(31 downto 16) = x"0001"
+							or processor_adr_out(31 downto 16) = x"f000"
+							or processor_adr_out(31 downto 16) = x"f001" then -- Main memory space
 								intercon_peripheral <= PERIPHERAL_MAIN_MEMORY;
 						elsif processor_adr_out(31 downto 16) = x"c000" then -- Peripheral memory space
 							case processor_adr_out(15 downto 12) is
-								when x"0" =>
-									intercon_peripheral <= PERIPHERAL_TIMER0;
-								when x"1" =>
-									intercon_peripheral <= PERIPHERAL_TIMER1;
+--								when x"0" =>
+--									intercon_peripheral <= PERIPHERAL_TIMER0;
+--								when x"1" =>
+--									intercon_peripheral <= PERIPHERAL_TIMER1;
 								when x"2" =>
 									intercon_peripheral <= PERIPHERAL_UART0;
-								when x"3" =>
-									intercon_peripheral <= PERIPHERAL_UART1;
-								when x"4" =>
-									intercon_peripheral <= PERIPHERAL_GPIO;
+--								when x"3" =>
+--									intercon_peripheral <= PERIPHERAL_UART1;
+--								when x"4" =>
+--									intercon_peripheral <= PERIPHERAL_GPIO;
 								when x"5" =>
 									intercon_peripheral <= PERIPHERAL_INTERCON;
 								when others => -- Invalid address - delegated to the error peripheral
 									intercon_peripheral <= PERIPHERAL_ERROR;
 							end case;
-						elsif processor_adr_out(31 downto 16) = x"ffff" then -- Firmware memory space
-							if processor_adr_out(15 downto 14) = b"10" then    -- AEE ROM
-								intercon_peripheral <= PERIPHERAL_AEE_ROM;
-							elsif processor_adr_out(15 downto 14) = b"11" then -- AEE RAM
-								intercon_peripheral <= PERIPHERAL_AEE_RAM;
-							end if;
+--						elsif processor_adr_out(31 downto 16) = x"ffff" then -- Firmware memory space
+--							if processor_adr_out(15 downto 14) = b"10" then    -- AEE ROM
+--								intercon_peripheral <= PERIPHERAL_AEE_ROM;
+--							elsif processor_adr_out(15 downto 14) = b"11" then -- AEE RAM
+--								intercon_peripheral <= PERIPHERAL_AEE_RAM;
+--							end if;
 						else
 							intercon_peripheral <= PERIPHERAL_ERROR;
 						end if;
@@ -248,46 +283,46 @@ begin
 	end process address_decoder;
 
 	processor_intercon: process(intercon_peripheral,
-		timer0_ack_out, timer0_dat_out, timer1_ack_out, timer1_dat_out,
-		uart0_ack_out, uart0_dat_out, uart1_ack_out, uart1_dat_out,
-		gpio_ack_out, gpio_dat_out,
+--		timer0_ack_out, timer0_dat_out, timer1_ack_out, timer1_dat_out,
+--		uart0_ack_out, uart0_dat_out, uart1_ack_out, uart1_dat_out,
+--		gpio_ack_out, gpio_dat_out,
 		intercon_ack_out, intercon_dat_out, error_ack_out,
-		aee_rom_ack_out, aee_rom_dat_out, aee_ram_ack_out, aee_ram_dat_out,
+--		aee_rom_ack_out, aee_rom_dat_out, aee_ram_ack_out, aee_ram_dat_out,
 		main_memory_ack_out, main_memory_dat_out)
 	begin
 		case intercon_peripheral is
-			when PERIPHERAL_TIMER0 =>
-				processor_ack_in <= timer0_ack_out;
-				processor_dat_in <= timer0_dat_out;
-			when PERIPHERAL_TIMER1 =>
-				processor_ack_in <= timer1_ack_out;
-				processor_dat_in <= timer1_dat_out;
+--			when PERIPHERAL_TIMER0 =>
+--				processor_ack_in <= timer0_ack_out;
+--				processor_dat_in <= timer0_dat_out;
+--			when PERIPHERAL_TIMER1 =>
+--				processor_ack_in <= timer1_ack_out;
+--				processor_dat_in <= timer1_dat_out;
 			when PERIPHERAL_UART0 =>
 				processor_ack_in <= uart0_ack_out;
 				processor_dat_in <= x"000000" & uart0_dat_out;
-			when PERIPHERAL_UART1 =>
-				processor_ack_in <= uart1_ack_out;
-				processor_dat_in <= x"000000" & uart1_dat_out;
-			when PERIPHERAL_GPIO =>
-				processor_ack_in <= gpio_ack_out;
-				processor_dat_in <= gpio_dat_out;
+--			when PERIPHERAL_UART1 =>
+--				processor_ack_in <= uart1_ack_out;
+--				processor_dat_in <= x"000000" & uart1_dat_out;
+--			when PERIPHERAL_GPIO =>
+--				processor_ack_in <= gpio_ack_out;
+--				processor_dat_in <= gpio_dat_out;
 			when PERIPHERAL_INTERCON =>
 				processor_ack_in <= intercon_ack_out;
 				processor_dat_in <= intercon_dat_out;
-			when PERIPHERAL_AEE_ROM =>
-				processor_ack_in <= aee_rom_ack_out;
-				processor_dat_in <= aee_rom_dat_out;
-			when PERIPHERAL_AEE_RAM =>
-				processor_ack_in <= aee_ram_ack_out;
-				processor_dat_in <= aee_ram_dat_out;
-			when PERIPHERAL_ERROR =>
-				processor_ack_in <= error_ack_out;
-				processor_dat_in <= (others => '0');
+--			when PERIPHERAL_AEE_ROM =>
+--				processor_ack_in <= aee_rom_ack_out;
+--				processor_dat_in <= aee_rom_dat_out;
+--			when PERIPHERAL_AEE_RAM =>
+--				processor_ack_in <= aee_ram_ack_out;
+--				processor_dat_in <= aee_ram_dat_out;
 			when PERIPHERAL_MAIN_MEMORY =>
 				processor_ack_in <= main_memory_ack_out;
 				processor_dat_in <= main_memory_dat_out;
 			when PERIPHERAL_NONE =>
 				processor_ack_in <= '0';
+				processor_dat_in <= (others => '0');
+			when others =>
+				processor_ack_in <= error_ack_out;
 				processor_dat_in <= (others => '0');
 		end case;
 	end process processor_intercon;
@@ -297,6 +332,7 @@ begin
 			clk => clk,
 			reset_n => reset_n,
 			reset_out => reset,
+			force_reset => force_reset,
 			system_clk => system_clk,
 			system_clk_locked => system_clk_locked
 		);
@@ -311,24 +347,28 @@ begin
 
 	processor: entity work.pp_potato
 		generic map(
-			RESET_ADDRESS        => x"ffff8000",
-			REGISTER_WISHBONE    => true,
-			REGISTER_INTERRUPT   => true,
-			ICACHE_ENABLE        => ICACHE_ENABLE,
-			ICACHE_LINE_SIZE     => ICACHE_LINE_SIZE,
-			ICACHE_NUM_LINES     => ICACHE_NUM_LINES,
-			DCACHE_ENABLE        => DCACHE_ENABLE,
-			DCACHE_REGION_BASE   => x"ffffc000",
-			DCACHE_REGION_LD_LEN => 14,
-			DCACHE_MAX_LINE_SIZE => DCACHE_MAX_LINE_SIZE,
-			DCACHE_NUM_LINES     => DCACHE_CACHE_DEPTH,
-			DCACHE_HAS_DLFU      => DCACHE_HAS_DLFU,
-			DCACHE_DLFU_RATE     => DCACHE_DLFU_RATE
+			RESET_ADDRESS         => RESET_VECTOR,
+			REGISTER_WISHBONE     => false,
+			REGISTER_INTERRUPT    => false,
+			ICACHE_ENABLE         => ICACHE_ENABLE,
+			ICACHE_LINE_SIZE      => ICACHE_LINE_SIZE,
+			ICACHE_NUM_LINES      => ICACHE_NUM_LINES,
+			DCACHE_ENABLE         => DCACHE_ENABLE,
+			DCACHE_REGION_BASE    => DCACHE_REGION_BASE,
+			DCACHE_REGION_LD_LEN  => DCACHE_REGION_LD_LEN,
+			DCACHE_MAX_LINE_SIZE  => DCACHE_MAX_LINE_SIZE,
+			DCACHE_NUM_LINES      => DCACHE_CACHE_DEPTH,
+			DCACHE_HAS_DLFU       => DCACHE_HAS_DLFU,
+			DCACHE_DLFU_RATE      => DCACHE_DLFU_RATE,
+			DCACHE_HISTORY_LENGTH => DCACHE_HISTORY_LENGTH,
+			DCACHE_WAYNESS        => DCACHE_WAYNESS
 		) port map(
 			clk => system_clk,
 			reset => reset,
+			force_reset => force_reset,
 			irq => irq_array,
 			test_context_out => open,
+			debug_vector => debug_vector,
 			wb_adr_out => processor_adr_out,
 			wb_dat_out => processor_dat_out,
 			wb_dat_in => processor_dat_in,
@@ -336,67 +376,69 @@ begin
 			wb_cyc_out => processor_cyc_out,
 			wb_stb_out => processor_stb_out,
 			wb_we_out => processor_we_out,
-			wb_ack_in => processor_ack_in
+			wb_ack_in => processor_ack_in,
+			cache_enable => global_en,
+			cache_crtl => cache_crtl
 		);
 
-	timer0: entity work.pp_soc_timer
-		port map(
-			clk => system_clk,
-			reset => reset,
-			irq => timer0_irq,
-			wb_adr_in => timer0_adr_in,
-			wb_dat_in => timer0_dat_in,
-			wb_dat_out => timer0_dat_out,
-			wb_cyc_in => timer0_cyc_in,
-			wb_stb_in => timer0_stb_in,
-			wb_we_in => timer0_we_in,
-			wb_ack_out => timer0_ack_out
-		);
-	timer0_adr_in <= processor_adr_out(timer0_adr_in'range);
-	timer0_dat_in <= processor_dat_out;
-	timer0_we_in <= processor_we_out;
-	timer0_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_TIMER0 else '0';
-	timer0_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_TIMER0 else '0';
+--	timer0: entity work.pp_soc_timer
+--		port map(
+--			clk => system_clk,
+--			reset => reset,
+--			irq => timer0_irq,
+--			wb_adr_in => timer0_adr_in,
+--			wb_dat_in => timer0_dat_in,
+--			wb_dat_out => timer0_dat_out,
+--			wb_cyc_in => timer0_cyc_in,
+--			wb_stb_in => timer0_stb_in,
+--			wb_we_in => timer0_we_in,
+--			wb_ack_out => timer0_ack_out
+--		);
+--	timer0_adr_in <= processor_adr_out(timer0_adr_in'range);
+--	timer0_dat_in <= processor_dat_out;
+--	timer0_we_in <= processor_we_out;
+--	timer0_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_TIMER0 else '0';
+--	timer0_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_TIMER0 else '0';
 
-	timer1: entity work.pp_soc_timer
-		port map(
-			clk => system_clk,
-			reset => reset,
-			irq => timer1_irq,
-			wb_adr_in => timer1_adr_in,
-			wb_dat_in => timer1_dat_in,
-			wb_dat_out => timer1_dat_out,
-			wb_cyc_in => timer1_cyc_in,
-			wb_stb_in => timer1_stb_in,
-			wb_we_in => timer1_we_in,
-			wb_ack_out => timer1_ack_out
-		);
-	timer1_adr_in <= processor_adr_out(timer1_adr_in'range);
-	timer1_dat_in <= processor_dat_out;
-	timer1_we_in  <= processor_we_out;
-	timer1_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_TIMER1 else '0';
-	timer1_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_TIMER1 else '0';
+--	timer1: entity work.pp_soc_timer
+--		port map(
+--			clk => system_clk,
+--			reset => reset,
+--			irq => timer1_irq,
+--			wb_adr_in => timer1_adr_in,
+--			wb_dat_in => timer1_dat_in,
+--			wb_dat_out => timer1_dat_out,
+--			wb_cyc_in => timer1_cyc_in,
+--			wb_stb_in => timer1_stb_in,
+--			wb_we_in => timer1_we_in,
+--			wb_ack_out => timer1_ack_out
+--		);
+--	timer1_adr_in <= processor_adr_out(timer1_adr_in'range);
+--	timer1_dat_in <= processor_dat_out;
+--	timer1_we_in  <= processor_we_out;
+--	timer1_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_TIMER1 else '0';
+--	timer1_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_TIMER1 else '0';
 
-	gpio: entity work.pp_soc_gpio
-		generic map(
-			NUM_GPIOS => gpio_pins'high + 1
-		) port map(
-			clk => system_clk,
-			reset => reset,
-			gpio => gpio_pins,
-			wb_adr_in => gpio_adr_in,
-			wb_dat_in => gpio_dat_in,
-			wb_dat_out => gpio_dat_out,
-			wb_cyc_in => gpio_cyc_in,
-			wb_stb_in => gpio_stb_in,
-			wb_we_in => gpio_we_in,
-			wb_ack_out => gpio_ack_out
-		);
-	gpio_adr_in <= processor_adr_out(gpio_adr_in'range);
-	gpio_dat_in <= processor_dat_out;
-	gpio_we_in  <= processor_we_out;
-	gpio_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_GPIO else '0';
-	gpio_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_GPIO else '0';
+--	gpio: entity work.pp_soc_gpio
+--		generic map(
+--			NUM_GPIOS => gpio_pins'high + 1
+--		) port map(
+--			clk => system_clk,
+--			reset => reset,
+--			gpio => gpio_pins,
+--			wb_adr_in => gpio_adr_in,
+--			wb_dat_in => gpio_dat_in,
+--			wb_dat_out => gpio_dat_out,
+--			wb_cyc_in => gpio_cyc_in,
+--			wb_stb_in => gpio_stb_in,
+--			wb_we_in => gpio_we_in,
+--			wb_ack_out => gpio_ack_out
+--		);
+--	gpio_adr_in <= processor_adr_out(gpio_adr_in'range);
+--	gpio_dat_in <= processor_dat_out;
+--	gpio_we_in  <= processor_we_out;
+--	gpio_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_GPIO else '0';
+--	gpio_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_GPIO else '0';
 
 	uart0: entity work.pp_soc_uart
 		generic map(
@@ -404,6 +446,7 @@ begin
 		) port map(
 			clk => system_clk,
 			reset => reset,
+			cts => uart0_cts,
 			txd => uart0_txd,
 			rxd => uart0_rxd,
 			irq => uart0_irq,
@@ -421,28 +464,28 @@ begin
 	uart0_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_UART0 else '0';
 	uart0_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_UART0 else '0';
 
-	uart1: entity work.pp_soc_uart
-		generic map(
-			FIFO_DEPTH => 32
-		) port map(
-			clk => system_clk,
-			reset => reset,
-			txd => uart1_txd,
-			rxd => uart1_rxd,
-			irq => uart1_irq,
-			wb_adr_in => uart1_adr_in,
-			wb_dat_in => uart1_dat_in,
-			wb_dat_out => uart1_dat_out,
-			wb_cyc_in => uart1_cyc_in,
-			wb_stb_in => uart1_stb_in,
-			wb_we_in => uart1_we_in,
-			wb_ack_out => uart1_ack_out
-		);
-	uart1_adr_in <= processor_adr_out(uart1_adr_in'range);
-	uart1_dat_in <= processor_dat_out(7 downto 0);
-	uart1_we_in  <= processor_we_out;
-	uart1_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_UART1 else '0';
-	uart1_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_UART1 else '0';
+--	uart1: entity work.pp_soc_uart
+--		generic map(
+--			FIFO_DEPTH => 32
+--		) port map(
+--			clk => system_clk,
+--			reset => reset,
+--			txd => uart1_txd,
+--			rxd => uart1_rxd,
+--			irq => uart1_irq,
+--			wb_adr_in => uart1_adr_in,
+--			wb_dat_in => uart1_dat_in,
+--			wb_dat_out => uart1_dat_out,
+--			wb_cyc_in => uart1_cyc_in,
+--			wb_stb_in => uart1_stb_in,
+--			wb_we_in => uart1_we_in,
+--			wb_ack_out => uart1_ack_out
+--		);
+--	uart1_adr_in <= processor_adr_out(uart1_adr_in'range);
+--	uart1_dat_in <= processor_dat_out(7 downto 0);
+--	uart1_we_in  <= processor_we_out;
+--	uart1_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_UART1 else '0';
+--	uart1_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_UART1 else '0';
 
 	intercon_error: entity work.pp_soc_intercon
 		port map(
@@ -476,53 +519,55 @@ begin
 	error_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_ERROR else '0';
 	error_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_ERROR else '0';
 
-	aee_rom: entity work.aee_rom_wrapper
-		generic map(
-			MEMORY_SIZE => 16384
-		) port map(
-			clk => system_clk,
-			reset => reset,
-			wb_adr_in => aee_rom_adr_in,
-			wb_dat_out => aee_rom_dat_out,
-			wb_cyc_in => aee_rom_cyc_in,
-			wb_stb_in => aee_rom_stb_in,
-			wb_sel_in => aee_rom_sel_in,
-			wb_ack_out => aee_rom_ack_out
-		);
-	aee_rom_adr_in <= processor_adr_out(aee_rom_adr_in'range);
-	aee_rom_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_AEE_ROM else '0';
-	aee_rom_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_AEE_ROM else '0';
-	aee_rom_sel_in <= processor_sel_out;
+--	aee_rom: entity work.aee_rom_wrapper
+--		generic map(
+--			MEMORY_SIZE => 16384
+--		) port map(
+--			clk => system_clk,
+--			reset => reset,
+--			wb_adr_in => aee_rom_adr_in,
+--			wb_dat_out => aee_rom_dat_out,
+--			wb_cyc_in => aee_rom_cyc_in,
+--			wb_stb_in => aee_rom_stb_in,
+--			wb_sel_in => aee_rom_sel_in,
+--			wb_ack_out => aee_rom_ack_out
+--		);
+--	aee_rom_adr_in <= processor_adr_out(aee_rom_adr_in'range);
+--	aee_rom_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_AEE_ROM else '0';
+--	aee_rom_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_AEE_ROM else '0';
+--	aee_rom_sel_in <= processor_sel_out;
 
-	aee_ram: entity work.pp_soc_memory
-		generic map(
-			MEMORY_SIZE => 16384
-		) port map(
-			clk => system_clk,
-			reset => reset,
-			wb_adr_in => aee_ram_adr_in,
-			wb_dat_in => aee_ram_dat_in,
-			wb_dat_out => aee_ram_dat_out,
-			wb_cyc_in => aee_ram_cyc_in,
-			wb_stb_in => aee_ram_stb_in,
-			wb_sel_in => aee_ram_sel_in,
-			wb_we_in => aee_ram_we_in,
-			wb_ack_out => aee_ram_ack_out
-		);
-	aee_ram_adr_in <= processor_adr_out(aee_ram_adr_in'range);
-	aee_ram_dat_in <= processor_dat_out;
-	aee_ram_we_in  <= processor_we_out;
-	aee_ram_sel_in <= processor_sel_out;
-	aee_ram_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_AEE_RAM else '0';
-	aee_ram_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_AEE_RAM else '0';
+--	aee_ram: entity work.pp_soc_memory(behaviour)
+--		generic map(
+--			MEMORY_SIZE => 16384
+--		) port map(
+--			clk => system_clk,
+--			reset => reset,
+--			wb_adr_in => aee_ram_adr_in,
+--			wb_dat_in => aee_ram_dat_in,
+--			wb_dat_out => aee_ram_dat_out,
+--			wb_cyc_in => aee_ram_cyc_in,
+--			wb_stb_in => aee_ram_stb_in,
+--			wb_sel_in => aee_ram_sel_in,
+--			wb_we_in => aee_ram_we_in,
+--			wb_ack_out => aee_ram_ack_out
+--		);
+--	aee_ram_adr_in <= processor_adr_out(aee_ram_adr_in'range);
+--	aee_ram_dat_in <= processor_dat_out;
+--	aee_ram_we_in  <= processor_we_out;
+--	aee_ram_sel_in <= processor_sel_out;
+--	aee_ram_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_AEE_RAM else '0';
+--	aee_ram_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_AEE_RAM else '0';
 
-	main_memory: entity work.pp_soc_memory
+	main_memory: entity work.pp_soc_memory(BehavioralInit)
 		generic map(
-			MEMORY_SIZE => 131072
+			MEMORY_SIZE => MEMORY_SIZE,
+			MEMORY_INIT_FILE => MEMORY_INIT_FILE,
+			MEMORY_LATENCY => MEMORY_LATENCY
 		) port map(
 			clk => system_clk,
 			reset => reset,
-			wb_adr_in => main_memory_adr_in,
+			wb_adr_in => main_memory_adr_in(integer(ceil(log2(real(MEMORY_SIZE)))) - 1 downto 0),
 			wb_dat_in => main_memory_dat_in,
 			wb_dat_out => main_memory_dat_out,
 			wb_cyc_in => main_memory_cyc_in,

@@ -11,7 +11,9 @@ use work.pp_utilities.all;
 --! @brief Simple memory module for use in Wishbone-based systems.
 entity pp_soc_memory is
 	generic(
-		MEMORY_SIZE : natural := 4096 --! Memory size in bytes.
+		MEMORY_SIZE : natural := 4096; --! Memory size in bytes.
+		MEMORY_INIT_FILE : string := "none";
+		MEMORY_LATENCY : natural := 2
 	);
 	port(
 		clk : in std_logic;
