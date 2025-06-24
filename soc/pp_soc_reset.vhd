@@ -35,12 +35,11 @@ architecture behaviour of pp_soc_reset is
 	signal fast_reset : std_logic := '0';
 	signal slow_reset : std_logic := '1';
 begin
-
-	reset_out <= fast_reset or slow_reset;
-
+	
 	process(clk)
 	begin
 		if rising_edge(clk) then
+		
 			if reset_n = '0' then
 				fast_reset <= '1';
 			elsif system_clk_locked = '1' then
@@ -54,6 +53,9 @@ begin
 	process(system_clk)
 	begin
 		if rising_edge(system_clk) then
+		
+			reset_out <= fast_reset or slow_reset;
+			
 			if fast_reset = '1' then
 				slow_reset <= '1';
 				counter <= RESET_CYCLE_COUNT;

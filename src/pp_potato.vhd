@@ -7,6 +7,7 @@ use ieee.std_logic_1164.all;
 
 use work.pp_types.all;
 use work.pp_utilities.all;
+use work.tracing_types.all;
 
 --! @brief The Potato Processor.
 --! This file provides a Wishbone-compatible interface to the Potato processor.
@@ -21,11 +22,17 @@ entity pp_potato is
 		ICACHE_LINE_SIZE       : natural                       := 4;           --! Number of words per instruction cache line.
 		ICACHE_NUM_LINES       : natural                       := 128;         --! Number of cache lines in the instruction cache.
 		DCACHE_ENABLE          : boolean                       := true;        --! Whether to enable the data cache.
+		DCACHE_WAYNESS         : integer                       := 4;
 		DCACHE_REGION_BASE     : std_logic_vector(31 downto 0) := x"00000000"; --! The base address of the cached region.
 		DCACHE_REGION_LD_LEN   : natural                       := 20;          --! The binary logarithm of the size of the cached region, i.e. the length of the address-offset.
 		DCACHE_MAX_LINE_SIZE   : natural                       := 8;           --! Maximum number of words per data cache line.
 		DCACHE_NUM_LINES       : natural                       := 128;         --! Number of cache lines in the data cache.
 		DCACHE_HAS_DLFU        : boolean                       := true;        --! Whether to enable the DLFU policy.
+		DCACHE_HAS_LRU         : boolean                       := true;
+		DCACHE_HAS_MRU         : boolean                       := true;
+		DCACHE_HAS_FIFO        : boolean                       := true;
+		DCACHE_HAS_RANDOM      : boolean                       := true;
+		DCACHE_HISTORY_LENGTH  : integer                       := 8;
 		DCACHE_DLFU_RATE       : natural                       := 32           --! Number of accesses to a set before every counter in the set is halfed.
 	);
 	port(
@@ -52,7 +59,13 @@ entity pp_potato is
 		wb_ack_in  : in  std_logic;
 		
 		cache_enable : in std_logic;
-		cache_crtl : in  std_logic_vector(1 downto 0)
+		cache_crtl : in  std_logic_vector(4 downto 0);
+		
+		replace_event : out std_logic;
+		replace_pc    : out std_logic_vector(31 downto 0);
+		replace_pol   : out policy_t;
+		
+		random : in std_logic_vector(7 downto 0)
 	);
 end entity pp_potato;
 
@@ -106,6 +119,8 @@ begin
 			
 			dcache_inval => dcache_inval,
 			dcache_polcrtl => dcache_polcrtl,
+			
+			replace_pc => replace_pc,
 			
 			dmem_address => dmem_address,
 			dmem_data_in => dmem_data_in,
@@ -188,9 +203,18 @@ begin
 				CACHE_DEPTH   => DCACHE_NUM_LINES,
 				REGION_BASE   => DCACHE_REGION_BASE,
 				REGION_LD_LEN => DCACHE_REGION_LD_LEN,
+				
+				WAYNESS => DCACHE_WAYNESS,
+				
+				HAS_LRU    => DCACHE_HAS_LRU,
+				HAS_MRU    => DCACHE_HAS_MRU,
+				HAS_FIFO   => DCACHE_HAS_FIFO,
+				HAS_RANDOM => DCACHE_HAS_RANDOM,
 
 				HAS_DECAYING_LFU => DCACHE_HAS_DLFU,
-				DLFU_RATE        => DCACHE_DLFU_RATE
+				DLFU_RATE        => DCACHE_DLFU_RATE,
+				
+				ADAPTIVE_HISTORY => DCACHE_HISTORY_LENGTH
 			) port map (
 				clk           => clk,
 				reset         => reset,
@@ -208,7 +232,12 @@ begin
 				
 				global_enable => cache_enable,
 				inval         => dcache_inval,
-				crtl          => cache_crtl
+				crtl          => cache_crtl,
+				
+				replace_pol   => replace_pol,
+				replace_event => replace_event,
+				
+				random        => random
 			);
 	end generate dcache_enabled;
 

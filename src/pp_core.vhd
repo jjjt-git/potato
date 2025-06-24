@@ -48,6 +48,8 @@ entity pp_core is
 
 		-- External interrupt input:
 		irq : in std_logic_vector(7 downto 0); --! IRQ inputs.
+		
+		replace_pc : out std_logic_vector(31 downto 0);
 
 		-- dcache control
 		dcache_inval : out std_logic;
@@ -335,6 +337,8 @@ begin
 		);
 
 	------- Execute (EX) Stage -------
+	replace_pc <= ex_pc;
+	
 	execute: entity work.pp_execute
 		port map(
 			clk => clk,

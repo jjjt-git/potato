@@ -29,11 +29,13 @@ begin
 		port map(
 			clk => clk,
 			reset_n => reset_n,
-			gpio_pins => gpio_pins,
 			uart0_txd => uart0_txd,
 			uart0_rxd => uart0_rxd,
 			uart1_txd => uart1_txd,
-			uart1_rxd => uart1_rxd
+			uart1_rxd => uart1_rxd,
+			
+			global_en => '1',
+			cache_crtl => (others => '1')
 		);
 
 	clock: process

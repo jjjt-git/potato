@@ -110,22 +110,24 @@ begin
 	--! Output the current test state:
 	test_context_out <= test_register;
 
-	time_clk_gen: process(clk)
-	begin
-		if rising_edge(clk) then
-			if reset = '1' then
-				time_clk <= '0';
-				time_clk_counter <= 0;
-			else
-				if time_clk_counter = TIME_DIVIDER - 1 then
-					time_clk_counter <= 0;
-					time_clk <= not time_clk;
-				else
-					time_clk_counter <= time_clk_counter + 1;
-				end if;
-			end if;
-		end if;
-	end process time_clk_gen;
+--	time_clk_gen: process(clk)
+--	begin
+--		if rising_edge(clk) then
+--			if reset = '1' then
+--				time_clk <= '0';
+--				time_clk_counter <= 0;
+--			else
+--				if time_clk_counter = TIME_DIVIDER - 1 then
+--					time_clk_counter <= 0;
+--					time_clk <= not time_clk;
+--				else
+--					time_clk_counter <= time_clk_counter + 1;
+--				end if;
+--			end if;
+--		end if;
+--	end process time_clk_gen;
+
+	time_clk <= clk;
 
 	mtime_counter: process(clk)
 	begin

@@ -48,6 +48,12 @@ entity pp_soc_uart is
 
 		-- Interrupt signal:
 		irq : out std_logic;
+		
+		-- direct transmit access
+		direct_lock  : in std_logic;
+		direct_valid : in std_logic;
+		direct_full  : out std_logic;
+		direct_data  : in std_logic_vector(7 downto 0);
 
 		-- Wishbone ports:
 		wb_adr_in  : in  std_logic_vector(11 downto 0);
@@ -63,6 +69,10 @@ end entity pp_soc_uart;
 architecture behaviour of pp_soc_uart is
 
 	subtype bitnumber is natural range 0 to 7; --! Type representing the index of a bit.
+	
+	signal direct_has_lock : std_logic;
+	signal buffer_in       : std_logic_vector(7 downto 0);
+	signal buffer_push     : std_logic;
 
 	-- UART sample clock signals:
 	signal sample_clk         : std_logic;
@@ -274,6 +284,16 @@ begin
 	end process sample_clock_generator;
 
 	---------- Data Buffers ----------
+	
+	direct_has_lock <= '1' when direct_lock = '1' and wb_state = IDLE else '0';
+	
+	direct_full <=
+		'1' when direct_lock = '0' else
+		'1' when direct_has_lock = '0' else
+		send_buffer_full;
+		
+	buffer_in   <= send_buffer_input when direct_has_lock = '0' else direct_data;
+	buffer_push <= send_buffer_push  when direct_has_lock = '0' else direct_valid;
 
 	send_buffer: entity work.pp_fifo
 		generic map(
@@ -284,9 +304,9 @@ begin
 			reset => reset,
 			full => send_buffer_full,
 			empty => send_buffer_empty,
-			data_in => send_buffer_input,
+			data_in => buffer_in,
 			data_out => send_buffer_output,
-			push => send_buffer_push,
+			push => buffer_push,
 			pop => send_buffer_pop
 		);
 
@@ -323,7 +343,7 @@ begin
 			else
 				case wb_state is
 					when IDLE =>
-						if wb_cyc_in = '1' and wb_stb_in = '1' then
+						if direct_lock = '0' and wb_cyc_in = '1' and wb_stb_in = '1' then
 							if wb_we_in = '1' then -- Write to register
 								if wb_adr_in = x"000" then
 									send_buffer_input <= wb_dat_in;

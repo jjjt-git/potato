@@ -11,6 +11,7 @@ use ieee.numeric_std.all;
 
 use work.pp_types.all;
 use work.pp_utilities.all;
+use work.tracing_types.all;
 
 --! @brief DCache implementation
 entity pp_dcache is
@@ -25,6 +26,9 @@ entity pp_dcache is
 		DLFU_RATE        : integer                       := 32;          --! Number of accesses to a group between decays.
 		
 		HAS_LRU          : boolean                       := true;
+		HAS_MRU          : boolean                       := true;
+		HAS_FIFO         : boolean                       := true;
+		HAS_RANDOM       : boolean                       := true;
 		
 		ADAPTIVE_HISTORY : integer                       := 8
 	);
@@ -44,11 +48,18 @@ entity pp_dcache is
 		
 		inval : in std_logic;
 		global_enable : in std_logic;
-		crtl  : in std_logic_vector(1 downto 0); -- bit 0 lru; bit 1 dlfu
+		crtl  : in std_logic_vector(4 downto 0); -- bit 0 lru; bit 1 dlfu; bit 2 mru; bit 3 fifo; bit 4 rand
 
 		-- Wishbone interface:
 		wb_inputs  : in wishbone_master_inputs;
-		wb_outputs : out wishbone_master_outputs
+		wb_outputs : out wishbone_master_outputs;
+		
+		-- trace
+		replace_event : out std_logic;
+		replace_pol   : out policy_t;
+		
+		-- Random input
+		random : in std_logic_vector(7 downto 0)
 	);
 end entity pp_dcache;
 
@@ -60,6 +71,9 @@ architecture behaviour of pp_dcache is
 	constant woffset_bits : integer := log2(MAX_LINE_SIZE);
 	constant index_bits   : integer := log2(CACHE_DEPTH) - log2(WAYNESS);
 	constant tag_bits     : integer := 32 - region_bits - boffset_bits - woffset_bits - index_bits;
+	
+	-- named values
+	constant policy_number : integer := 5;
 
 	-- address part types
 	subtype addr_region_t  is std_logic_vector(region_bits  - 1 downto 0);
@@ -91,20 +105,20 @@ architecture behaviour of pp_dcache is
 	-- cache metadata type
 	subtype dlfu_group_c is integer range 0 to DLFU_RATE - 1;
 	subtype dlfu_line_c  is integer range 0 to DLFU_RATE * 2 - 1;
-	type dlfu_meta_t is record
-		group_c : dlfu_group_c;
-		line_c  : dlfu_line_c;
-	end record;
 	
-	subtype lru_meta_t is way_t;
+	type lru_meta_t is array (0 to way_t'high) of std_logic_vector(way_t'high downto 0);
+	
+	subtype fifo_meta_t is way_t;
 	
 	type cache_meta_t is record
 		dirty : std_logic;
 	end record;
 	
-	type cache_dlfu_meta_a is array(0 to index_t'high) of dlfu_meta_t;
-	type cache_lru_meta_a  is array(0 to index_t'high) of lru_meta_t;
-	type cache_meta_a      is array(0 to index_t'high) of cache_meta_t;
+	type cache_dlfu_meta_a_line_c  is array(0 to index_t'high)              of dlfu_line_c;
+	type cache_dlfu_meta_a_group_c is array(0 to CACHE_DEPTH / WAYNESS - 1) of dlfu_group_c;
+	type cache_lru_meta_a          is array(0 to CACHE_DEPTH / WAYNESS - 1) of lru_meta_t;
+	type cache_fifo_meta_a         is array(0 to CACHE_DEPTH / WAYNESS - 1) of fifo_meta_t;
+	type cache_meta_a              is array(0 to index_t'high)              of cache_meta_t;
 	
 	-- policy adaptivity
 	subtype pol_adapt_ptr_t is integer range 0 to ADAPTIVE_HISTORY - 1;
@@ -115,27 +129,32 @@ architecture behaviour of pp_dcache is
 		refetched  : std_logic_vector(0 to pol_adapt_ptr_t'high);
 		nxt        : pol_adapt_ptr_t;
 	end record;
-	type pol_adapt_r is array(0 to 1) of pol_adapt_pol_r;
+	type pol_adapt_r is array(0 to policy_number - 1) of pol_adapt_pol_r;
 	signal pol_adapt : pol_adapt_r;
 	
-	type eviction_note_t is array(0 to 1) of cache_tag_t;
+	type eviction_note_t is array(0 to policy_number - 1) of cache_tag_t;
 	signal pol_eviction_tag   : eviction_note_t;
-	signal pol_eviction_valid : std_logic_vector(0 to 1);
+	signal pol_eviction_valid : std_logic_vector(0 to policy_number - 1);
 	
 	subtype pol_prio_t is integer range 0 to ADAPTIVE_HISTORY;
-	type pol_prio_a is array(0 to 1) of pol_prio_t;
+	type pol_prio_a is array(0 to policy_number - 1) of pol_prio_t;
 
 	-- cache memories
 	signal data_a  : cache_line_a;
 	signal tag_a   : cache_tag_a;
 	signal valid_a : std_logic_vector(index_t'high downto 0);
 	
-	signal meta_a      : cache_meta_a;
-	signal meta_a_lru  : cache_lru_meta_a;
-	signal meta_a_dlfu : cache_dlfu_meta_a;
+	signal meta_a              : cache_meta_a;
+	signal meta_a_lru          : cache_lru_meta_a;
+	signal meta_a_dlfu_line_c  : cache_dlfu_meta_a_line_c;
+	signal meta_a_dlfu_group_c : cache_dlfu_meta_a_group_c;
+	signal meta_a_fifo         : cache_fifo_meta_a;
+	
+	signal lru_meta : lru_meta_t;
 
-	attribute ram_style            : string;
-	attribute ram_style of data_a  : signal is "block";
+	attribute ram_style           : string;
+	attribute ram_style of data_a : signal is "block";
+	attribute ram_style of tag_a  : signal is "distributed";
 
 	-- signals for response control
 	signal cache_hit  : std_logic;
@@ -163,9 +182,10 @@ architecture behaviour of pp_dcache is
 	-- signals for replace control
 	signal repl_way   : way_t;
 	signal pol_tag    : addr_tag_t;
+	signal pol_empty  : boolean;
 
 	-- controller signals
-	type main_state_t is (IDLE,
+	type main_state_t is (IDLE, LOOKUP,
 		PASS_THROUGH, PASS_THROUGH_RESPOND,
 		WRITE_RESPOND,
 		READ_RESPOND, REFILL, REPLACE, WRITE_BACK);
@@ -192,13 +212,13 @@ architecture behaviour of pp_dcache is
 	signal pol_way   : way_t;
 
 	-- dlfu policy signals
-	signal dlfu_repl, lru_repl : way_t;
+	signal dlfu_repl, lru_repl, mru_repl, fifo_repl, rand_repl: way_t;
 	
 	-- block ram operator signals
 	signal rdata, wdata : cache_line_t;
 	signal wmask  : line_mask_t;
 	signal aindex : index_t;
-
+	
 	-- helper signal
 	signal index_h, index_r : index_t;
 	signal soft_reset : std_logic;
@@ -345,16 +365,17 @@ begin
 
 	aindex <= index_r when main_state = REFILL else index_h;
 	
-	operator: process(clk) begin
+	data_operator: process(clk) begin
 		if rising_edge(clk) then
 			rdata <= data_a(aindex);
+			
 			for ii in 0 to MAX_LINE_SIZE * 4 - 1 loop
 				if wmask(ii) = '1' then
 					data_a(aindex)(8 * (ii + 1) - 1 downto 8 * ii) <= wdata(8 * (ii + 1) - 1 downto 8 * ii);
 				end if;
 			end loop;
 		end if;
-	end process operator;
+	end process data_operator;
 
 	index_r <= get_index(addr_index, repl_way);
 	index_h <= get_index(addr_index, hit_way);
@@ -441,38 +462,42 @@ begin
 									end if;
 	
 									main_state <= PASS_THROUGH;
-								elsif mem_read_req = '1' then
-									need_wb <= '0';
-									if cache_hit = '1' then
-										main_state <= READ_RESPOND;
-									else
-										wb_tag <= addr_tag;
-	
-										wb_start <= 0;
-										wb_stop  <= MAX_LINE_SIZE - 1;
-										wb_mask  <= (others => '1');
-										wb_mode  <= READ;
-	
-										main_state <= REFILL;
-									end if;
 								else
-									if cache_hit = '1' then
-										wdata <= data_shifted;
-										wmask <= access_mask_shifted;
-										
-										main_state <= WRITE_RESPOND;
-									else -- pass-through
-										wb_start <= to_integer(unsigned(addr_woffset));
-										wb_stop  <= to_integer(unsigned(addr_woffset));
-										wb_tag   <= addr_tag;
-										wb_mask  <= access_mask_shifted;
-					
-										wb_wbuffer_line <= data_shifted;
-					
-										wb_mode <= WRITE;
-	
-										main_state <= PASS_THROUGH;
-									end if;
+									main_state <= LOOKUP;
+								end if;
+							end if;
+						when LOOKUP =>
+							if mem_read_req = '1' then
+								need_wb <= '0';
+								if cache_hit = '1' then
+									main_state <= READ_RESPOND;
+								else
+									wb_tag <= addr_tag;
+
+									wb_start <= 0;
+									wb_stop  <= MAX_LINE_SIZE - 1;
+									wb_mask  <= (others => '1');
+									wb_mode  <= READ;
+
+									main_state <= REFILL;
+								end if;
+							else
+								if cache_hit = '1' then
+									wdata <= data_shifted;
+									wmask <= access_mask_shifted;
+									
+									main_state <= WRITE_RESPOND;
+								else -- pass-through
+									wb_start <= to_integer(unsigned(addr_woffset));
+									wb_stop  <= to_integer(unsigned(addr_woffset));
+									wb_tag   <= addr_tag;
+									wb_mask  <= access_mask_shifted;
+				
+									wb_wbuffer_line <= data_shifted;
+				
+									wb_mode <= WRITE;
+
+									main_state <= PASS_THROUGH;
 								end if;
 							end if;
 	
@@ -550,9 +575,21 @@ begin
 	pol_tag     <= addr_tag_l;
 	pol_way     <= repl_way when main_state = REPLACE else hit_way;
 	
-	policy_sel: process(crtl, dlfu_repl, lru_repl, pol_adapt)
+	policy_overview: process(valid_a, pol_index) begin
+			pol_empty <= true;
+			for ii in 0 to way_t'high loop
+				if valid_a(get_index(pol_index, ii)) = '1' then
+					pol_empty <= false;
+				end if;
+			end loop;
+	end process policy_overview;
+	
+	policy_sel: process(crtl, dlfu_repl, lru_repl, mru_repl, pol_adapt, valid_a, pol_index, pol_replace)
 		variable prios : pol_prio_a;
 		variable en : std_logic_vector(prios'range);
+		
+		variable empty_slot    : boolean;
+		variable empty_slot_nr : way_t;
 	begin
 		if HAS_LRU then
 			en(0) := crtl(0);
@@ -566,8 +603,35 @@ begin
 			en(1) := '0';
 		end if;
 		
+		if HAS_MRU then
+			en(2) := crtl(2);
+		else
+			en(2) := '0';
+		end if;
+		
+		if HAS_FIFO then
+			en(3) := crtl(3);
+		else
+			en(3) := '0';
+		end if;
+		
+		if HAS_RANDOM then
+			en(4) := crtl(4);
+		else
+			en(4) := '0';
+		end if;
+		
+		empty_slot_nr := 0;
+		empty_slot := false;
+		for ii in 0 to way_t'high loop
+			if not empty_slot and valid_a(get_index(pol_index, ii)) = '0' then
+				empty_slot := true;
+				empty_slot_nr := ii;
+			end if;
+		end loop;
+		
 		for pid in prios'range loop
-			if en(0) = '1' then
+			if en(pid) = '1' then
 				prios(pid) := 0;
 				for ii in 0 to pol_adapt_ptr_t'high loop
 					if pol_adapt(pid).refetched(ii) = '1' then
@@ -579,39 +643,88 @@ begin
 			end if;
 		end loop;
 		
-		case en is
-			when b"11"  => -- both enabled
-				if prios(1) < prios(0) then -- dlfu has less misses in history
-					repl_way <= dlfu_repl;
-					pol_finished <= '1';
-				else
-					repl_way <= lru_repl;
-					pol_finished <= '1';
-				end if;
-			when b"10"  => -- dlfu enabled
-				repl_way <= dlfu_repl;
-				pol_finished <= '1';
-			when b"01"  => -- lru  enabled
-				repl_way <= lru_repl;
-				pol_finished <= '1';
-			when others => -- none enabled
-				repl_way <= 0;
-				pol_finished <= '1';
-		end case;
+		replace_pol.random <= prios(4);
+		replace_pol.fifo   <= prios(3);
+		replace_pol.lru    <= prios(0);
+		replace_pol.mru    <= prios(2);
+		replace_pol.dlfu   <= prios(1);
+		
+		if empty_slot then
+			repl_way <= empty_slot_nr;
+			pol_finished <= '1';
+			replace_event <= '0';
+		else
+			-- general priority with ties
+			-- random > fifo > dlfu > lru > mru
+			-- bit 0 lru; bit 1 dlfu; bit 2 mru; bit 3 fifo; bit 4 rand
+					if
+							en(2) = '1' and
+							(prios(2) < prios(0) or en(0) = '0') and
+							(prios(2) < prios(1) or en(1) = '0') and
+							(prios(2) < prios(3) or en(3) = '0') and
+							(prios(2) < prios(4) or en(4) = '0') then
+						-- mru is best in recent history
+						pol_finished <= '1';
+						repl_way <= mru_repl;
+						replace_event <= pol_replace;
+					elsif
+							en(0) = '1' and
+							(prios(0) < prios(1) or en(1) = '0') and
+							(prios(0) < prios(3) or en(3) = '0') and
+							(prios(0) < prios(4) or en(4) = '0') then
+						-- lru is best in recent history
+						pol_finished <= '1';
+						repl_way <= lru_repl;
+						replace_event <= pol_replace;
+					elsif
+							en(1) = '1' and
+							(prios(1) < prios(3) or en(3) = '0') and
+							(prios(1) < prios(4) or en(4) = '0') then
+						-- dlfu is best in recent history
+						pol_finished <= '1';
+						repl_way <= dlfu_repl;
+						replace_event <= pol_replace;
+					elsif
+							en(3) = '1' and
+							(prios(3) < prios(4) or en(4) = '0') then
+						-- fifo is best in recent history
+						pol_finished <= '1';
+						repl_way <= fifo_repl;
+						replace_event <= pol_replace;
+					elsif
+							en(4) = '1' then
+						-- rand is best in recent history
+						pol_finished <= '1';
+						repl_way <= rand_repl;
+						replace_event <= pol_replace;
+					else
+						pol_finished <= '1';
+						repl_way <= 0;
+						replace_event <= '0';
+					end if;
+		end if;
 	end process policy_sel;
+	
+	rand_repl <= to_integer(unsigned(random)) mod WAYNESS when HAS_RANDOM else 0;
 	
 	pol_eviction_tag(0)   <= tag_a  (get_index(pol_index, lru_repl));
 	pol_eviction_valid(0) <= valid_a(get_index(pol_index, lru_repl));
 	pol_eviction_tag(1)   <= tag_a  (get_index(pol_index, dlfu_repl));
 	pol_eviction_valid(1) <= valid_a(get_index(pol_index, dlfu_repl));
+	pol_eviction_tag(2)   <= tag_a  (get_index(pol_index, mru_repl));
+	pol_eviction_valid(2) <= valid_a(get_index(pol_index, mru_repl));
+	pol_eviction_tag(3)   <= tag_a  (get_index(pol_index, fifo_repl));
+	pol_eviction_valid(3) <= valid_a(get_index(pol_index, fifo_repl));
+	pol_eviction_tag(4)   <= tag_a  (get_index(pol_index, rand_repl));
+	pol_eviction_valid(4) <= valid_a(get_index(pol_index, rand_repl));
 	
 	policy_sel_st: if HAS_DECAYING_LFU and HAS_LRU generate
 		process(clk) -- management for all pol-adaptivity state
 			variable nxt : pol_adapt_ptr_t;
 		begin
 			for pid in pol_eviction_tag'range loop
-				nxt := pol_adapt(pid).nxt;
 				if rising_edge(clk) then
+					nxt := pol_adapt(pid).nxt;
 					if reset = '1' then
 						pol_adapt(pid).refetched <= (others => '1'); -- init with all ones, new entries will start with 0
 						pol_adapt(pid).nxt <= 0;
@@ -646,7 +759,7 @@ begin
 	end generate policy_sel_st;
 	
 	policy_dlfu: if HAS_DECAYING_LFU generate
-		eval: process(pol_index, meta_a_dlfu, valid_a)
+		eval: process(pol_index, meta_a_dlfu_line_c)
 			variable index : index_t;
 			variable key   : way_t;
 			variable min   : dlfu_line_c;
@@ -657,11 +770,8 @@ begin
 			for ii in 0 to way_t'high loop
 				index := get_index(pol_index, ii);
 				
-				if valid_a(index) = '0' then
-					min := 0;
-					key := ii;
-				elsif meta_a_dlfu(index).line_c < min then
-					min := meta_a_dlfu(index).line_c;
+				if meta_a_dlfu_line_c(index) < min then
+					min := meta_a_dlfu_line_c(index);
 					key := ii;
 				end if;
 			end loop;
@@ -669,18 +779,9 @@ begin
 			dlfu_repl <= key;
 		end process eval;
 		
-		state: process(clk, valid_a, pol_index)
+		state: process(clk)
 			variable index : index_t;
-			
-			variable empty : boolean;
 		begin
-			empty := true;
-			for ii in 0 to way_t'high loop
-				if valid_a(get_index(pol_index, ii)) = '1' then
-					empty := false;
-				end if;
-			end loop;
-			
 			if rising_edge(clk) then
 				if pol_update = '1' or pol_replace = '1' then
 --					for ii in 0 to way_t'high loop -- group counter mngt
@@ -689,10 +790,10 @@ begin
 						-- I   empty          => 0 -> counter
 						-- II  counter at max => 0 -> counter
 						-- III middle         => increment counter
-						if empty or meta_a_dlfu(index).group_c = dlfu_group_c'high then
-							meta_a_dlfu(index).group_c <= 0;
+						if pol_empty or meta_a_dlfu_group_c(to_integer(unsigned(pol_index))) = dlfu_group_c'high then
+							meta_a_dlfu_group_c(to_integer(unsigned(pol_index))) <= 0;
 						else
-							meta_a_dlfu(index).group_c <= meta_a_dlfu(index).group_c + 1;
+							meta_a_dlfu_group_c(to_integer(unsigned(pol_index))) <= meta_a_dlfu_group_c(to_integer(unsigned(pol_index))) + 1;
 						end if;
 --					end loop;
 					
@@ -705,16 +806,16 @@ begin
 						-- IV  access to group without decay   => do nothing
 						-- V   access to group with decay      => counter >> 1 -> counter
 						if pol_way = ii and pol_replace = '1' then -- replace
-							meta_a_dlfu(index).line_c <= 0; -- I
-						elsif meta_a_dlfu(index).group_c = dlfu_group_c'high then -- decay
+							meta_a_dlfu_line_c(index) <= 0; -- I
+						elsif meta_a_dlfu_group_c(to_integer(unsigned(pol_index))) = dlfu_group_c'high then -- decay
 							if pol_way = ii then -- access to this element
-								meta_a_dlfu(index).line_c <= (meta_a_dlfu(index).line_c / 2) + 1; -- III
+								meta_a_dlfu_line_c(index) <= (meta_a_dlfu_line_c(index) / 2) + 1; -- III
 							else -- access to group
-								meta_a_dlfu(index).line_c <= meta_a_dlfu(index).line_c / 2; -- V
+								meta_a_dlfu_line_c(index) <= meta_a_dlfu_line_c(index) / 2; -- V
 							end if;
 						else -- no decay
 							if pol_way = ii then -- access to this element
-								meta_a_dlfu(index).line_c <= meta_a_dlfu(index).line_c + 1; -- II
+								meta_a_dlfu_line_c(index) <= meta_a_dlfu_line_c(index) + 1; -- II
 							end if;
 						end if;
 					end loop;
@@ -723,9 +824,14 @@ begin
 		end process state;
 	end generate policy_dlfu;
 	
+	lookup_lru_mru: if HAS_LRU or HAS_MRU generate
+		process (pol_index, meta_a_lru) begin
+			lru_meta <= meta_a_lru(to_integer(unsigned(pol_index)));
+		end process;
+	end generate lookup_lru_mru;
+	
 	policy_lru: if HAS_LRU generate
-		eval: process(pol_index, meta_a_lru, valid_a)
-			variable index : index_t;
+		eval: process(lru_meta)
 			variable key   : way_t;
 			variable hit   : boolean;
 		begin
@@ -733,77 +839,96 @@ begin
 			hit := false;
 			
 			for ii in 0 to way_t'high loop
-				index := get_index(pol_index, ii);
-				
-				if valid_a(index) = '0' then
-					key := ii;
-					hit := true;
-				elsif not hit and meta_a_lru(index) = ii then
+				if not hit and lru_meta(ii)(way_t'high) = '1' then
 					key := ii;
 				end if;
 			end loop;
 			
 			lru_repl <= key;
 		end process eval;
-		
-		state: process(clk, pol_index, valid_a, pol_way)
-			variable index, index_next : index_t;
-			
-			variable nxt, head : way_t;
-			variable found : bit_vector(way_t'high downto 0);
-			variable empty : boolean;
+	end generate policy_lru;
+	
+	policy_mru: if HAS_LRU generate
+		eval: process(lru_meta)
+			variable key   : way_t;
+			variable hit   : boolean;
 		begin
-			found := (others => '0');
-			empty := true;
-			head  := 0;
-			nxt   := 0;
+			key := 0;
+			hit := false;
 			
-			for ii in 0 to way_t'high loop -- build lut
-				index := get_index(pol_index, ii);
-				
-				if valid_a(index) = '1' then
-					found(meta_a_lru(index)) := '1';
-					empty := false;
+			for ii in 0 to way_t'high loop
+				if not hit and lru_meta(ii)(0) = '1' then
+					key := ii;
 				end if;
 			end loop;
 			
-			for ii in 0 to way_t'high loop -- get ptrs
-				index := get_index(pol_index, ii);
-				
-				if found(ii) = '0' then -- head is not referenced by any other element
-					head := ii;
-				end if;
-				
-				if meta_a_lru(index) = pol_way then -- next element is the one referencing target
-					nxt := ii;
+			mru_repl <= key;
+		end process eval;
+	end generate policy_mru;
+	
+	policy_lru_mru_state: if HAS_LRU or HAS_MRU generate
+		state: process(clk)
+			variable repl, this : way_t;
+			variable val_repl, val_this : boolean;
+		begin
+			for ii in 0 to way_t'high loop -- forall ways
+				if rising_edge(clk) then
+					if pol_empty then
+						if pol_way = ii then
+							meta_a_lru(to_integer(unsigned(pol_index))) <= (ii => (0 => '1', others => '0'), others => (others => '0'));
+						end if;
+					else
+						-- two cases
+						-- I  placement/access into this                   => record to most recently accessed
+						-- II placement/access into less recently accessed => shift
+
+						if pol_way = ii then -- I
+							meta_a_lru(to_integer(unsigned(pol_index)))(ii) <= (0 => '1', others => '0');
+						else -- II prep for test
+							val_repl := false;
+							val_this := false;
+							repl := 0;
+							this := 0;
+							for jj in 0 to way_t'high loop
+								if not val_repl and lru_meta(pol_way)(jj) = '1' then -- find age of the replaced
+									repl := jj;
+									val_repl := true;
+								end if;
+								
+								if not val_this and lru_meta(ii)(jj) = '1' then -- find age of this
+									this := jj;
+									val_this := true;
+								end if;
+							end loop;
+							
+							if val_repl and val_this and repl > this then -- test for II
+								meta_a_lru(to_integer(unsigned(pol_index)))(ii) <= std_logic_vector(shift_left(unsigned(
+									meta_a_lru(to_integer(unsigned(pol_index)))(ii)
+								), 1));
+							end if;
+						end if;
+					end if;
 				end if;
 			end loop;
-			
-			index      := get_index(pol_index, pol_way);
-			index_next := get_index(pol_index, nxt);
+		end process state;
+	end generate policy_lru_mru_state;
+	
+	policy_fifo: if HAS_FIFO generate
+		eval: process(meta_a_fifo, pol_index) begin
+			fifo_repl <= meta_a_fifo(to_integer(unsigned(pol_index)));
+		end process eval;
 		
+		state: process(clk) begin
 			if rising_edge(clk) then
-				-- four cases:
-				-- I   placement into invalid, set empty     => cur ref self
-				-- II  placement into invalid, set not empty => cur ref head
-				-- III placement/update into tail            => cur ref head; next ref self
-				-- IV  placement/update into middle          => cur ref head; next ref cur.ref
-				if valid_a(index) = '0' then
-					if empty then
-						meta_a_lru(index) <= pol_way;
-					else
-						meta_a_lru(index) <= head;
-					end if;
-				else
-					if meta_a_lru(index) = pol_way then
-						meta_a_lru(index_next) <= pol_way;
-					else
-						meta_a_lru(index_next) <= meta_a_lru(index);
-					end if;
-					meta_a_lru(index) <= head;
+				if pol_empty then
+					meta_a_fifo(to_integer(unsigned(pol_index))) <= 0;
+				elsif pol_replace = '1' then
+					-- one case
+					-- placement into anywhere => increment counter
+					meta_a_fifo(to_integer(unsigned(pol_index))) <= (meta_a_fifo(to_integer(unsigned(pol_index))) + 1) mod WAYNESS;
 				end if;
 			end if;
 		end process state;
-	end generate policy_lru;
+	end generate policy_fifo;
 	
 end architecture behaviour;

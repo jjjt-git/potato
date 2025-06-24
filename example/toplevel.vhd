@@ -6,6 +6,8 @@ library ieee;
 use ieee.std_logic_1164.all;
 use IEEE.math_real.all;
 
+use work.tracing_types.all;
+
 -- This is a SoC design for the Arty or Nexys development board. It has the following memory layout:
 --
 -- 0x00000000: Main memory (16 kB)
@@ -14,6 +16,7 @@ use IEEE.math_real.all;
 -- 0xc0002000: UART (for host communication)
 -- 0xc0004000: GPIO0 (disabled)
 -- 0xc0005000: Interconnect control/error module
+-- 0xc0006000: Trace module
 -- 0xf0000000: Main memory uncached mapping
 -- 0xffff8000: Application execution environment ROM (16 kB)
 -- 0xffffc000: Application execution environment RAM (16 kB)
@@ -29,13 +32,18 @@ entity toplevel is
 		DCACHE_ENABLE          : boolean                       := true;        --! Whether to enable the data cache.
 		DCACHE_REGION_BASE     : std_logic_vector(31 downto 0) := x"00000000"; --! The base address of the cached region.
 		DCACHE_REGION_LD_LEN   : natural                       := 17;          --! The binary logarithm of the size of the cached region, i.e. the length of the address-offset.
+		
+		DCACHE_HAS_LRU         : boolean                       := true;
+		DCACHE_HAS_MRU         : boolean                       := true;
+		DCACHE_HAS_FIFO        : boolean                       := true;
+		DCACHE_HAS_RANDOM      : boolean                       := true;
 		DCACHE_HAS_DLFU        : boolean                       := true;        --! Whether to enable the DLFU policy.
 		DCACHE_DLFU_RATE       : natural                       := 32;          --! Number of accesses to a set before every counter in the set is halfed.
 		
-		DCACHE_MAX_LINE_SIZE   : natural                       := 16;           --! Maximum number of words per data cache line.
+		DCACHE_MAX_LINE_SIZE   : natural                       := 4;           --! Maximum number of words per data cache line.
 		DCACHE_CACHE_DEPTH     : natural                       := 128;         --! Number of cache lines in the data cache.
-		DCACHE_WAYNESS         : natural                       := 16;
-		DCACHE_HISTORY_LENGTH  : natural                       := 32
+		DCACHE_WAYNESS         : natural                       := 4;
+		DCACHE_HISTORY_LENGTH  : natural                       := 4
 	);
 	port(
 		clk     : in  std_logic;
@@ -49,11 +57,15 @@ entity toplevel is
 		
 		-- crtl
 		global_en : in std_logic;
-		dlfu_en   : in std_logic;
-		lru_en    : in std_logic;
 		global_st : out std_logic;
-		dlfu_st   : out std_logic;
-		lru_st    : out std_logic;
+	
+		cache_crtl : in std_logic_vector(4 downto 0); -- bit 0 lru; bit 1 dlfu; bit 2 mru; bit 3 fifo; bit 4 rand
+		cache_st   : out std_logic_vector(4 downto 0);
+		
+		trace_dumping : out std_logic;
+		trace_gather  : out std_logic;
+		trace_enable  : in  std_logic;
+		trace_enabled : out std_logic;
 
 		-- UART0 signals:
 		uart0_cts : out std_logic;
@@ -62,9 +74,7 @@ entity toplevel is
 
 		-- UART1 signals:
 		uart1_txd : out std_logic;
-		uart1_rxd : in  std_logic;
-		
-		debug : out std_logic_vector(11 downto 0)
+		uart1_rxd : in  std_logic
 	);
 end entity toplevel;
 
@@ -72,7 +82,6 @@ architecture behaviour of toplevel is
 
 	-- Reset signals:
 	signal reset : std_logic;
-	signal force_reset : std_logic;
 
 	-- Internal clock signals:
 	signal system_clk : std_logic;
@@ -127,6 +136,11 @@ architecture behaviour of toplevel is
 	signal uart0_stb_in  : std_logic;
 	signal uart0_we_in   : std_logic;
 	signal uart0_ack_out : std_logic;
+	
+	-- Trace signals:
+	signal trace_cyc_in  : std_logic;
+	signal trace_stb_in  : std_logic;
+	signal trace_ack_out : std_logic;
 
 	-- UART1 signals:
 --	signal uart1_adr_in  : std_logic_vector(11 downto 0);
@@ -195,6 +209,7 @@ architecture behaviour of toplevel is
 
 	-- Selected peripheral on the interconnect:
 	type intercon_peripheral_type is (
+		PERIPHERAL_TRACE,
 		PERIPHERAL_TIMER0, PERIPHERAL_TIMER1,
 		PERIPHERAL_UART0, PERIPHERAL_UART1, PERIPHERAL_GPIO,
 		PERIPHERAL_AEE_ROM, PERIPHERAL_AEE_RAM, PERIPHERAL_INTERCON,
@@ -207,18 +222,62 @@ architecture behaviour of toplevel is
 	-- core debug
 	signal debug_vector : std_logic_vector(31 downto 0);
 	
-	signal cache_crtl : std_logic_vector(1 downto 0);
+	-- entropy sources
+	signal dcache_random : std_logic_vector(7 downto 0);
+	
+	-- direct trace dump signals
+	signal direct_lock  : std_logic;
+	signal direct_valid : std_logic;
+	signal direct_full  : std_logic;
+	signal direct_data  : std_logic_vector(7 downto 0);
+	
+	signal replace_event : std_logic;
+	signal replace_pc    : std_logic_vector(31 downto 0);
+	signal replace_pol   : policy_t;
 
 begin
-	debug <= (others => '0');
+	
+	trace_enabled <= trace_enable;
+	trace_dumping <= '1' when direct_lock = '1' and direct_valid = '1' and direct_full = '0' else '0';
+	trace_gather  <= replace_event; 
+	tracer: entity work.trace_policies
+		port map (
+			clk   => system_clk,
+			reset => reset,
+			
+			enable => trace_enable,
+			
+			replace_event => replace_event,
+			replace_pc    => replace_pc,
+			replace_pol   => replace_pol,
+			
+			wb_cyc_in  => trace_cyc_in,
+			wb_stb_in  => trace_stb_in,
+			wb_ack_out => trace_ack_out,
+			
+			direct_lock  => direct_lock,
+			direct_valid => direct_valid,
+			direct_full  => direct_full,
+			direct_data  => direct_data
+		);
+	trace_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_TRACE else '0';
+	trace_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_TRACE else '0';
+
+	dcache_rng: entity work.prng
+		generic map (
+			WOUT => 8,
+			init0 => 487,
+			init1 => 1290
+		) port map (
+			clk    => system_clk,
+			random => dcache_random
+		);
+
 	uart1_txd <= '0';
 	
-	cache_crtl(1) <= dlfu_en;
-	cache_crtl(0) <= lru_en;
+	cache_st <= cache_crtl;
 	
 	global_st <= global_en;
-	dlfu_st <= dlfu_en;
-	lru_st  <= lru_en;
 
 	irq_array <= (
 			IRQ_TIMER0_INDEX => timer0_irq,
@@ -257,6 +316,8 @@ begin
 --									intercon_peripheral <= PERIPHERAL_GPIO;
 								when x"5" =>
 									intercon_peripheral <= PERIPHERAL_INTERCON;
+								when x"6" =>
+									intercon_peripheral <= PERIPHERAL_TRACE;
 								when others => -- Invalid address - delegated to the error peripheral
 									intercon_peripheral <= PERIPHERAL_ERROR;
 							end case;
@@ -284,7 +345,8 @@ begin
 
 	processor_intercon: process(intercon_peripheral,
 --		timer0_ack_out, timer0_dat_out, timer1_ack_out, timer1_dat_out,
---		uart0_ack_out, uart0_dat_out, uart1_ack_out, uart1_dat_out,
+		uart0_ack_out, uart0_dat_out,
+--		uart1_ack_out, uart1_dat_out,
 --		gpio_ack_out, gpio_dat_out,
 		intercon_ack_out, intercon_dat_out, error_ack_out,
 --		aee_rom_ack_out, aee_rom_dat_out, aee_ram_ack_out, aee_ram_dat_out,
@@ -300,6 +362,8 @@ begin
 			when PERIPHERAL_UART0 =>
 				processor_ack_in <= uart0_ack_out;
 				processor_dat_in <= x"000000" & uart0_dat_out;
+			when PERIPHERAL_TRACE =>
+				processor_ack_in <= trace_ack_out;
 --			when PERIPHERAL_UART1 =>
 --				processor_ack_in <= uart1_ack_out;
 --				processor_dat_in <= x"000000" & uart1_dat_out;
@@ -332,7 +396,6 @@ begin
 			clk => clk,
 			reset_n => reset_n,
 			reset_out => reset,
-			force_reset => force_reset,
 			system_clk => system_clk,
 			system_clk_locked => system_clk_locked
 		);
@@ -358,14 +421,19 @@ begin
 			DCACHE_REGION_LD_LEN  => DCACHE_REGION_LD_LEN,
 			DCACHE_MAX_LINE_SIZE  => DCACHE_MAX_LINE_SIZE,
 			DCACHE_NUM_LINES      => DCACHE_CACHE_DEPTH,
+			
+			DCACHE_HAS_LRU        => DCACHE_HAS_LRU,
+			DCACHE_HAS_MRU        => DCACHE_HAS_MRU,
+			DCACHE_HAS_FIFO       => DCACHE_HAS_FIFO,
+			DCACHE_HAS_RANDOM     => DCACHE_HAS_RANDOM,
 			DCACHE_HAS_DLFU       => DCACHE_HAS_DLFU,
 			DCACHE_DLFU_RATE      => DCACHE_DLFU_RATE,
+			
 			DCACHE_HISTORY_LENGTH => DCACHE_HISTORY_LENGTH,
 			DCACHE_WAYNESS        => DCACHE_WAYNESS
 		) port map(
 			clk => system_clk,
 			reset => reset,
-			force_reset => force_reset,
 			irq => irq_array,
 			test_context_out => open,
 			debug_vector => debug_vector,
@@ -378,7 +446,13 @@ begin
 			wb_we_out => processor_we_out,
 			wb_ack_in => processor_ack_in,
 			cache_enable => global_en,
-			cache_crtl => cache_crtl
+			cache_crtl => cache_crtl,
+			
+			replace_event => replace_event,
+			replace_pol   => replace_pol,
+			replace_pc    => replace_pc,
+			
+			random => dcache_random
 		);
 
 --	timer0: entity work.pp_soc_timer
@@ -446,7 +520,7 @@ begin
 		) port map(
 			clk => system_clk,
 			reset => reset,
-			cts => uart0_cts,
+--			cts => uart0_cts,
 			txd => uart0_txd,
 			rxd => uart0_rxd,
 			irq => uart0_irq,
@@ -456,7 +530,12 @@ begin
 			wb_cyc_in => uart0_cyc_in,
 			wb_stb_in => uart0_stb_in,
 			wb_we_in => uart0_we_in,
-			wb_ack_out => uart0_ack_out
+			wb_ack_out => uart0_ack_out,
+			
+			direct_lock  => direct_lock,
+			direct_valid => direct_valid,
+			direct_full  => direct_full,
+			direct_data  => direct_data
 		);
 	uart0_adr_in <= processor_adr_out(uart0_adr_in'range);
 	uart0_dat_in <= processor_dat_out(7 downto 0);
