@@ -164,6 +164,78 @@ interface IEthPhy;
         output tx_d);
 endinterface
 
+module eth_udp_send_wrapper #(
+    parameter int unsigned CLK_RATIO = 0,
+    parameter int unsigned MAX_DATA_BYTES = 548,
+    parameter int unsigned MIN_DATA_BYTES = 256,
+    parameter int unsigned POWER_UP_CYCLES = 5_000_000,
+    parameter int unsigned WORD_SIZE_BYTES = 0) (
+    // Standard
+    input logic clk,
+    input logic rst,
+    // Writing data
+    input logic wr_en,
+    input logic [3:0] wr_d,
+    output logic wr_rst_busy,
+    output logic wr_full,
+    // Ethernet
+    input logic clk25,
+    
+    output logic IEthPhy_ref_clk,
+    output logic IEthPhy_rstn,
+    input  logic IEthPhy_tx_clk,
+    output logic IEthPhy_tx_en,
+    output logic [3:0] IEthPhy_tx_d,
+    
+    input logic flush,
+    
+    input logic [31:0] IIpInfo_src_ip,
+	input logic [47:0] IIpInfo_src_mac,
+	input logic [15:0] IIpInfo_src_port,
+	input logic [31:0] IIpInfo_dst_ip,
+	input logic [47:0] IIpInfo_dst_mac,
+	input logic [15:0] IIpInfo_dst_port,
+        
+    output logic mac_busy,
+    output logic rdy);
+    
+    IEthPhy eth();
+    assign eth.ref_clk = IEthPhy_ref_clk;
+	assign eth.rstn    = IEthPhy_rstn;
+	assign eth.tx_clk  = IEthPhy_tx_clk;
+	assign eth.tx_en   = IEthPhy_tx_en;
+	assign eth.tx_d    = IEthPhy_tx_d;
+	
+    IIpInfo ip_info();
+    assign ip_info.src_ip   = IIpInfo_src_ip;
+    assign ip_info.src_mac  = IIpInfo_src_mac;
+    assign ip_info.src_port = IIpInfo_src_port;
+    assign ip_info.dst_ip   = IIpInfo_dst_ip;
+    assign ip_info.dst_mac  = IIpInfo_dst_mac;
+    assign ip_info.dst_port = IIpInfo_dst_port;
+   
+	eth_udp_send #(
+		.CLK_RATIO(CLK_RATIO),
+		.MAX_DATA_BYTES(MAX_DATA_BYTES),
+		.MIN_DATA_BYTES(MIN_DATA_BYTES),
+		.POWER_UP_CYCLES(POWER_UP_CYCLES),
+		.WORD_SIZE_BYTES(WORD_SIZE_BYTES)
+	) comp (
+		.clk(clk),
+		.rst(rst),
+		.wr_en(wr_en),
+		.wr_d(wr_d),
+		.wr_rst_busy(wr_rst_busy),
+		.wr_full(wr_full),
+		.clk25(clk25),
+		.eth(eth),
+		.flush(flush),
+		.ip_info(ip_info),
+		.mac_busy(mac_busy),
+		.rdy(rdy)
+	);
+endmodule
+
 /// This module implements a transmitter for an Ethernet port. This is used to
 /// send UDP packets using IPv4.
 ///
@@ -278,7 +350,7 @@ module eth_udp_send #(
     // Assert that the parameters are appropriate
     initial begin
         // Check that the clock ratio is set appropriately
-        if (CLK_RATIO < 2) begin
+        if (CLK_RATIO < 1) begin
             $error("CLK_RATIO must be set to at least 1.");
         end
         // Check that the word size is set appropriately
@@ -473,6 +545,7 @@ module eth_udp_send #(
         SEND_MAC_HEADER,
         SEND_IP_HEADER,
         SEND_UDP_HEADER,
+        SEND_COUNTER,
         SEND_PAYLOAD,
         SEND_PADDING,
         SEND_FCS,
@@ -500,6 +573,9 @@ module eth_udp_send #(
 
     // The number of nibbles that need to be sent to pad the packet length
     int padding_nibbles;
+    
+    // A counter to allow detection of lost packages
+    logic [15:0] pkt_cnt;
 
     // From a [vector] grab a nibble at the given index. The order of the
     // nibbles in each byte that are selected is reversed.
@@ -522,6 +598,7 @@ module eth_udp_send #(
             padding_nibbles <= '0;
             payload_nibbles <= '0;
             rdy             <= 0;
+            pkt_cnt         <= '0;
             state           <= POWER_UP;
         end else begin
             // No longer need to reset
