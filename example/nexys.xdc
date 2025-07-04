@@ -57,3 +57,28 @@ set_operating_conditions -heatsink low
 
 # Clock signal:
 create_clock -period 10.000 -name sys_clk_pin -waveform {0.000 5.000} -add [get_ports clk]
+
+# constrain eth clk
+create_generated_clock -name RMII_clk_pin -source [get_ports clk] -divide_by 2 [get_ports RMII_rclk];
+
+set_input_delay 5 -clock [get_clocks RMII_clk_pin] [get_ports RMII_crsdv]
+set_input_delay 5 -clock [get_clocks RMII_clk_pin] [get_ports RMII_rxer]
+set_input_delay 5 -clock [get_clocks RMII_clk_pin] [get_ports RMII_rxd[0]]
+set_input_delay 5 -clock [get_clocks RMII_clk_pin] [get_ports RMII_rxd[1]]
+set_output_delay 5 -clock [get_clocks RMII_clk_pin] [get_ports RMII_txen]
+set_output_delay 5 -clock [get_clocks RMII_clk_pin] [get_ports RMII_txd[0]]
+set_output_delay 5 -clock [get_clocks RMII_clk_pin] [get_ports RMII_txd[1]]
+
+# place eth
+#set_property -dict { PACKAGE_PIN C9    IOSTANDARD LVCMOS33 } [get_ports { ETH_MDC }]; #IO_L11P_T1_SRCC_16 Sch=eth_mdc
+#set_property -dict { PACKAGE_PIN A9    IOSTANDARD LVCMOS33 } [get_ports { ETH_MDIO }]; #IO_L14N_T2_SRCC_16 Sch=eth_mdio
+#set_property -dict { PACKAGE_PIN B3    IOSTANDARD LVCMOS33 } [get_ports { ETH_RSTN }]; #IO_L10P_T1_AD15P_35 Sch=eth_rstn
+set_property -dict { PACKAGE_PIN D9    IOSTANDARD LVCMOS33 } [get_ports { RMII_crsdv }]; #IO_L6N_T0_VREF_16 Sch=eth_crsdv
+set_property -dict { PACKAGE_PIN C10   IOSTANDARD LVCMOS33 } [get_ports { RMII_rxer }]; #IO_L13N_T2_MRCC_16 Sch=eth_rxerr
+set_property -dict { PACKAGE_PIN C11   IOSTANDARD LVCMOS33 } [get_ports { RMII_rxd[0] }]; #IO_L13P_T2_MRCC_16 Sch=eth_rxd[0]
+set_property -dict { PACKAGE_PIN D10   IOSTANDARD LVCMOS33 } [get_ports { RMII_rxd[1] }]; #IO_L19N_T3_VREF_16 Sch=eth_rxd[1]
+set_property -dict { PACKAGE_PIN B9    IOSTANDARD LVCMOS33 } [get_ports { RMII_txen }]; #IO_L11N_T1_SRCC_16 Sch=eth_txen
+set_property -dict { PACKAGE_PIN A10   IOSTANDARD LVCMOS33 } [get_ports { RMII_txd[0] }]; #IO_L14P_T2_SRCC_16 Sch=eth_txd[0]
+set_property -dict { PACKAGE_PIN A8    IOSTANDARD LVCMOS33 } [get_ports { RMII_txd[1] }]; #IO_L12N_T1_MRCC_16 Sch=eth_txd[1]
+set_property -dict { PACKAGE_PIN D5    IOSTANDARD LVCMOS33 } [get_ports { RMII_rclk }]; #IO_L11P_T1_SRCC_35 Sch=eth_refclk
+#set_property -dict { PACKAGE_PIN B8    IOSTANDARD LVCMOS33 } [get_ports { ETH_INTN }]; #IO_L12P_T1_MRCC_16 Sch=eth_intn

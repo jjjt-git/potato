@@ -21,19 +21,23 @@ entity pp_soc_reset is
 
 		reset_n   : in  std_logic;
 		reset_out : out std_logic;
+		reset_eth : out std_logic;
 
 		system_clk        : in std_logic;
-		system_clk_locked : in std_logic
+		system_clk_locked : in std_logic;
+		eth_clk           : in std_logic;
+		eth_ready         : in std_logic
 	);
 end entity pp_soc_reset;
 
 architecture behaviour of pp_soc_reset is
 
 	subtype counter_type is natural range 0 to RESET_CYCLE_COUNT;
-	signal counter : counter_type;
+	signal counter, eth_counter : counter_type;
 
 	signal fast_reset : std_logic := '0';
-	signal slow_reset : std_logic := '1';
+	signal slow_reset, eth_reset : std_logic := '1';
+	signal eth_locked : std_logic;
 begin
 	
 	process(clk)
@@ -43,7 +47,7 @@ begin
 			if reset_n = '0' then
 				fast_reset <= '1';
 			elsif system_clk_locked = '1' then
-				if fast_reset = '1' and slow_reset = '1' then
+				if fast_reset = '1' and slow_reset = '1' and eth_reset = '1' then
 					fast_reset <= '0';
 				end if;
 			end if;
@@ -54,7 +58,7 @@ begin
 	begin
 		if rising_edge(system_clk) then
 		
-			reset_out <= fast_reset or slow_reset;
+			reset_out <= (fast_reset or slow_reset) and eth_locked;
 			
 			if fast_reset = '1' then
 				slow_reset <= '1';
@@ -64,6 +68,27 @@ begin
 					slow_reset <= '0';
 				else
 					counter <= counter - 1;
+				end if;
+			end if;
+		end if;
+	end process;
+	
+	
+
+	process(eth_clk)
+	begin
+		if rising_edge(eth_clk) then
+		
+			reset_eth <= fast_reset or eth_reset;
+			
+			if fast_reset = '1' then
+				eth_reset <= '1';
+				eth_counter <= RESET_CYCLE_COUNT;
+			else
+				if eth_counter = 0 then
+					eth_reset <= '0';
+				else
+					eth_counter <= eth_counter - 1;
 				end if;
 			end if;
 		end if;
