@@ -73,6 +73,12 @@ architecture Behavioral of constant_rate_trace is
 	
 	signal dump_nibble : std_logic_vector(3 downto 0);
 begin
+	-- plan: integrate into other tracer
+	-- package built out of nibbles
+	-- nibble 1 ctr
+	-- nibble non 1 active pol
+	-- endmark "1111_1111" / "1111" depending on current cnt
+	-- flush after endmark
 
 	dump_nibble <=
 		dump_buf_a(dump_ctr + 1) when dump_ctr mod 2 = 0 else

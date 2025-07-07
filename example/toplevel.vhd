@@ -5,6 +5,7 @@
 library ieee;
 use ieee.std_logic_1164.all;
 use IEEE.math_real.all;
+use IEEE.NUMERIC_STD.ALL;
 
 use work.tracing_types.all;
 
@@ -43,7 +44,9 @@ entity toplevel is
 		DCACHE_MAX_LINE_SIZE   : natural                       := 4;           --! Maximum number of words per data cache line.
 		DCACHE_CACHE_DEPTH     : natural                       := 128;         --! Number of cache lines in the data cache.
 		DCACHE_WAYNESS         : natural                       := 4;
-		DCACHE_HISTORY_LENGTH  : natural                       := 4
+		DCACHE_HISTORY_LENGTH  : natural                       := 4;
+		
+		TRACE_RATE             : integer                       := 16
 	);
 	port(
 		clk     : in  std_logic;
@@ -64,8 +67,8 @@ entity toplevel is
 		
 		trace_dumping : out std_logic;
 		trace_gather  : out std_logic;
-		trace_enable  : in  std_logic;
-		trace_enabled : out std_logic;
+		trace_enable  : in  std_logic_vector(1 downto 0);
+		trace_enabled : out std_logic_vector(1 downto 0);
 
 		-- UART0 signals:
 		uart0_cts : out std_logic;
@@ -84,7 +87,7 @@ architecture behaviour of toplevel is
 	signal reset : std_logic;
 
 	-- Internal clock signals:
-	signal system_clk : std_logic;
+	signal system_clk, system_clk_fr : std_logic;
 	signal system_clk_locked : std_logic;
 
 	-- Interrupt indices:
@@ -138,6 +141,7 @@ architecture behaviour of toplevel is
 	signal uart0_ack_out : std_logic;
 	
 	-- Trace signals:
+	signal trace_adr_in  : std_logic_vector(11 downto 0);
 	signal trace_cyc_in  : std_logic;
 	signal trace_stb_in  : std_logic;
 	signal trace_ack_out : std_logic;
@@ -234,16 +238,19 @@ architecture behaviour of toplevel is
 	signal replace_event : std_logic;
 	signal replace_pc    : std_logic_vector(31 downto 0);
 	signal replace_pol   : policy_t;
-
+	
 begin
 	
 	trace_enabled <= trace_enable;
 	trace_dumping <= '1' when direct_lock = '1' and direct_valid = '1' and direct_full = '0' else '0';
 	trace_gather  <= replace_event; 
 	tracer: entity work.trace_policies
-		port map (
-			clk   => system_clk,
-			reset => reset,
+		generic map (
+			sample_rate   => TRACE_RATE
+		) port map (
+			clk_fr  => system_clk_fr,
+			clk_hlt => system_clk,
+			reset   => reset,
 			
 			enable => trace_enable,
 			
@@ -253,6 +260,7 @@ begin
 			
 			wb_cyc_in  => trace_cyc_in,
 			wb_stb_in  => trace_stb_in,
+			wb_addr_in => trace_adr_in,
 			wb_ack_out => trace_ack_out,
 			
 			direct_lock  => direct_lock,
@@ -262,6 +270,7 @@ begin
 		);
 	trace_cyc_in <= processor_cyc_out when intercon_peripheral = PERIPHERAL_TRACE else '0';
 	trace_stb_in <= processor_stb_out when intercon_peripheral = PERIPHERAL_TRACE else '0';
+	trace_adr_in <= processor_adr_out(trace_adr_in'range);
 
 	dcache_rng: entity work.prng
 		generic map (
@@ -348,7 +357,7 @@ begin
 		uart0_ack_out, uart0_dat_out,
 --		uart1_ack_out, uart1_dat_out,
 --		gpio_ack_out, gpio_dat_out,
-		intercon_ack_out, intercon_dat_out, error_ack_out,
+		intercon_ack_out, intercon_dat_out, error_ack_out, trace_ack_out,
 --		aee_rom_ack_out, aee_rom_dat_out, aee_ram_ack_out, aee_ram_dat_out,
 		main_memory_ack_out, main_memory_dat_out)
 	begin
@@ -364,6 +373,7 @@ begin
 				processor_dat_in <= x"000000" & uart0_dat_out;
 			when PERIPHERAL_TRACE =>
 				processor_ack_in <= trace_ack_out;
+				processor_dat_in <= (others => '0');
 --			when PERIPHERAL_UART1 =>
 --				processor_ack_in <= uart1_ack_out;
 --				processor_dat_in <= x"000000" & uart1_dat_out;
@@ -392,20 +402,23 @@ begin
 	end process processor_intercon;
 
 	reset_controller: entity work.pp_soc_reset
-		port map(
+		generic map(
+			RESET_CYCLE_COUNT => 4
+		)port map(
 			clk => clk,
 			reset_n => reset_n,
 			reset_out => reset,
-			system_clk => system_clk,
+			
+			system_clk        => system_clk_fr,
 			system_clk_locked => system_clk_locked
 		);
 
 	clkgen: entity work.clock_generator
 		port map(
-			clk => clk,
-			resetn => reset_n,
-			system_clk => system_clk,
-			locked => system_clk_locked
+			clk         => clk,
+			resetn      => reset_n,
+			system_clk  => system_clk_fr,
+			locked      => system_clk_locked
 		);
 
 	processor: entity work.pp_potato
@@ -518,7 +531,7 @@ begin
 		generic map(
 			FIFO_DEPTH => 32
 		) port map(
-			clk => system_clk,
+			clk => system_clk_fr,
 			reset => reset,
 --			cts => uart0_cts,
 			txd => uart0_txd,

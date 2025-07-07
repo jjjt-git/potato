@@ -584,12 +584,15 @@ begin
 			end loop;
 	end process policy_overview;
 	
-	policy_sel: process(crtl, dlfu_repl, lru_repl, mru_repl, pol_adapt, valid_a, pol_index, pol_replace)
+	policy_sel: process(crtl, dlfu_repl, lru_repl, mru_repl, fifo_repl, rand_repl, pol_adapt, valid_a, pol_index, pol_replace)
 		variable prios : pol_prio_a;
 		variable en : std_logic_vector(prios'range);
 		
 		variable empty_slot    : boolean;
 		variable empty_slot_nr : way_t;
+		
+		variable ready : std_logic;
+		variable way   : way_t;
 	begin
 		if HAS_LRU then
 			en(0) := crtl(0);
@@ -649,59 +652,73 @@ begin
 		replace_pol.mru    <= prios(2);
 		replace_pol.dlfu   <= prios(1);
 		
-		if empty_slot then
-			repl_way <= empty_slot_nr;
-			pol_finished <= '1';
-			replace_event <= '0';
+		-- general priority with ties
+		-- random > fifo > dlfu > lru > mru
+		-- bit 0 lru; bit 1 dlfu; bit 2 mru; bit 3 fifo; bit 4 rand
+		if
+				en(2) = '1' and
+				(prios(2) < prios(0) or en(0) = '0') and
+				(prios(2) < prios(1) or en(1) = '0') and
+				(prios(2) < prios(3) or en(3) = '0') and
+				(prios(2) < prios(4) or en(4) = '0') then
+			-- mru is best in recent history
+			ready := '1';
+			way   := mru_repl;
+			
+			replace_event <= pol_replace;
+			replace_pol.active <= POL_MRU;
+		elsif
+				en(0) = '1' and
+				(prios(0) < prios(1) or en(1) = '0') and
+				(prios(0) < prios(3) or en(3) = '0') and
+				(prios(0) < prios(4) or en(4) = '0') then
+			-- lru is best in recent history
+			ready := '1';
+			way   := lru_repl;
+			
+			replace_event <= pol_replace;
+			replace_pol.active <= POL_LRU;
+		elsif
+				en(1) = '1' and
+				(prios(1) < prios(3) or en(3) = '0') and
+				(prios(1) < prios(4) or en(4) = '0') then
+			-- dlfu is best in recent history
+			ready := '1';
+			way   := dlfu_repl;
+			
+			replace_event <= pol_replace;
+			replace_pol.active <= POL_DLFU;
+		elsif
+				en(3) = '1' and
+				(prios(3) < prios(4) or en(4) = '0') then
+			-- fifo is best in recent history
+			ready := '1';
+			way   := fifo_repl;
+			
+			replace_event <= pol_replace;
+			replace_pol.active <= POL_FIFO;
+		elsif
+				en(4) = '1' then
+			-- rand is best in recent history
+			ready := '1';
+			way   := rand_repl;
+			
+			replace_event <= pol_replace;
+			replace_pol.active <= POL_RANDOM;
 		else
-			-- general priority with ties
-			-- random > fifo > dlfu > lru > mru
-			-- bit 0 lru; bit 1 dlfu; bit 2 mru; bit 3 fifo; bit 4 rand
-					if
-							en(2) = '1' and
-							(prios(2) < prios(0) or en(0) = '0') and
-							(prios(2) < prios(1) or en(1) = '0') and
-							(prios(2) < prios(3) or en(3) = '0') and
-							(prios(2) < prios(4) or en(4) = '0') then
-						-- mru is best in recent history
-						pol_finished <= '1';
-						repl_way <= mru_repl;
-						replace_event <= pol_replace;
-					elsif
-							en(0) = '1' and
-							(prios(0) < prios(1) or en(1) = '0') and
-							(prios(0) < prios(3) or en(3) = '0') and
-							(prios(0) < prios(4) or en(4) = '0') then
-						-- lru is best in recent history
-						pol_finished <= '1';
-						repl_way <= lru_repl;
-						replace_event <= pol_replace;
-					elsif
-							en(1) = '1' and
-							(prios(1) < prios(3) or en(3) = '0') and
-							(prios(1) < prios(4) or en(4) = '0') then
-						-- dlfu is best in recent history
-						pol_finished <= '1';
-						repl_way <= dlfu_repl;
-						replace_event <= pol_replace;
-					elsif
-							en(3) = '1' and
-							(prios(3) < prios(4) or en(4) = '0') then
-						-- fifo is best in recent history
-						pol_finished <= '1';
-						repl_way <= fifo_repl;
-						replace_event <= pol_replace;
-					elsif
-							en(4) = '1' then
-						-- rand is best in recent history
-						pol_finished <= '1';
-						repl_way <= rand_repl;
-						replace_event <= pol_replace;
-					else
-						pol_finished <= '1';
-						repl_way <= 0;
-						replace_event <= '0';
-					end if;
+			ready := '1';
+			way   := 0;
+			
+			replace_event <= '0';
+			replace_pol.active <= POL_NONE;
+		end if;
+		
+		if empty_slot then
+			repl_way     <= empty_slot_nr;
+			pol_finished <= '1';
+		else
+			repl_way     <= way;
+			pol_finished <= ready;	
 		end if;
 	end process policy_sel;
 	

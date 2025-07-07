@@ -7,11 +7,18 @@ use work.tracing_types.ALL;
 Library xpm;
 use xpm.vcomponents.all;
 
+Library UNISIM;
+use UNISIM.vcomponents.all;
+
 entity trace_policies is
+	generic (
+		sample_rate   : integer := 16
+	);
 	port (
-		clk, reset: in std_logic;
+		clk_fr, reset: in std_logic;
+		clk_hlt: out std_logic;
 		
-		enable: in std_logic;
+		enable: in std_logic_vector(1 downto 0);
 				
 		-- Tracing data
 		replace_event : in std_logic;
@@ -21,6 +28,7 @@ entity trace_policies is
 		-- Wishbone ports:
 		wb_cyc_in  : in  std_logic;
 		wb_stb_in  : in  std_logic;
+		wb_addr_in : in  std_logic_vector(11 downto 0);
 		wb_ack_out : out std_logic;
 		
 		-- Direct dump access to UART buffer
@@ -32,6 +40,8 @@ entity trace_policies is
 end trace_policies;
 
 architecture Behavioral of trace_policies is
+
+	signal clk: std_logic;
 	
 	subtype trace_mem_t is std_logic_vector(53 downto 0);
 	signal time_cnt: integer range 0 to 1023;
@@ -52,22 +62,6 @@ architecture Behavioral of trace_policies is
 	signal rd_rst_busy, wr_rst_busy, wr_ack, data_valid: std_logic;
 	
 	signal count_matches: std_logic;
-	
-	attribute mark_debug : string;
-	attribute mark_debug of count_matches : signal is "true";
-	attribute mark_debug of empty         : signal is "true";
-	attribute mark_debug of push          : signal is "true";
-	attribute mark_debug of pull          : signal is "true";
-	attribute mark_debug of direct_lock   : signal is "true";
-	attribute mark_debug of direct_data   : signal is "true";
-	attribute mark_debug of direct_full   : signal is "true";
-	attribute mark_debug of direct_valid  : signal is "true";
-	attribute mark_debug of rd_rst_busy   : signal is "true";
-	attribute mark_debug of wr_rst_busy   : signal is "true";
-	attribute mark_debug of wr_ack        : signal is "true";
-	attribute mark_debug of data_valid    : signal is "true";
-	attribute mark_debug of count_fifo    : signal is "true";
-	attribute mark_debug of count_in      : signal is "true";
 	
 	type ascii_lut_t is array(0 to 63) of std_logic_vector(7 downto 0);
 	constant ascii_lut: ascii_lut_t := (
@@ -138,12 +132,183 @@ architecture Behavioral of trace_policies is
 	);
 	
 	type state_t is (
-		GATHER, GET_LOCK, GET_NEXT, DUMP_PHASE1, DUMP_PHASE2, START_SYMBOL, IDLE_FULL, FINALIZE
+		GATHER, GET_LOCK, GET_NEXT, DUMP_PHASE1, DUMP_PHASE2, START_SYMBOL, IDLE_FULL,
+		FINALIZE
 	);
 	signal state: state_t;
 	
-	attribute mark_debug of state : signal is "true";
+	signal ct_cnt:  integer range 0 to sample_rate - 1;
+	
+	signal const_rate_nibble_in, const_rate_nibble_out: std_logic_vector(2 downto 0);
+	signal clk_disable, clk_en, push_disable: std_logic;
+	signal const_rate_push, const_rate_pull: std_logic;
+	
+	type ct_state_t is (
+		IDLE, AQ_LOCK, BG_SYMBOL, PUSH1, WAIT1, FINISH
+	);
+	signal ct_state: ct_state_t;
+	
+		
+	signal direct_lock_c, direct_lock_s   : std_logic;
+	signal direct_valid_c, direct_valid_s : std_logic;
+	signal direct_data_c, direct_data_s   : std_logic_vector(7 downto 0);
+	signal ack_c, ack_s : std_logic;
+	signal wb_active: std_logic;
+	
+--	attribute mark_debug : string;
+--	attribute mark_debug of direct_lock_c     : signal is "true";
+--	attribute mark_debug of direct_valid_c    : signal is "true";
+--	attribute mark_debug of direct_lock_s     : signal is "true";
+--	attribute mark_debug of direct_valid_s    : signal is "true";
+--	attribute mark_debug of clk_en            : signal is "true";
+--	attribute mark_debug of ct_state          : signal is "true";
+--	attribute mark_debug of state             : signal is "true";
+--	attribute mark_debug of wb_active         : signal is "true";
+--	attribute mark_debug of push_disable      : signal is "true";
 begin
+	clk_hlt <= clk;
+	clk_en  <=
+		'1' when reset = '1' else
+		'1' when ct_state /= WAIT1 or ct_state  /= PUSH1 else
+		'0' when clk_disable = '1' else
+		'1';
+	
+	wb_active <= wb_stb_in and wb_cyc_in;
+	
+	BUFGCE_inst : BUFGCE
+	port map (
+		O => clk,
+		CE => clk_en,
+		I => clk_fr
+	);
+	
+	direct_lock <=
+		direct_lock_c when ct_state /= IDLE else
+		direct_lock_s when state /= GATHER  else
+		'0';
+	direct_valid <=
+		direct_valid_c when ct_state /= IDLE else
+		direct_valid_s when state /= GATHER  else
+		'0';
+	direct_data <=
+		direct_data_c when ct_state /= IDLE else
+		direct_data_s when state /= GATHER  else
+		(others => '0');
+	wb_ack_out <=
+		ack_c when ct_state /= IDLE else
+		ack_s when state /= GATHER  else
+		'0';
+	
+	xpm_fifo_async_inst : xpm_fifo_async
+		generic map (
+			READ_MODE => "std",
+			FIFO_READ_LATENCY => 0,
+			FULL_RESET_VALUE => 0,
+			RD_DATA_COUNT_WIDTH => 1,
+			RELATED_CLOCKS => 1,
+			FIFO_WRITE_DEPTH => 16,
+			READ_DATA_WIDTH => 3,
+			WRITE_DATA_WIDTH => 3
+		)
+		port map (
+			rst => reset,
+			
+			empty => push_disable,
+			full => clk_disable,
+			
+			injectdbiterr => '0',
+			injectsbiterr => '0',
+			sleep => '0',
+			
+			rd_clk => clk_fr,
+			dout => const_rate_nibble_out,
+			rd_en => const_rate_pull,
+			
+			wr_clk => clk,
+			din => const_rate_nibble_in,
+			wr_en => const_rate_push
+		);
+
+	const_rate_nibble_in <=
+		"000" when replace_pol.active = POL_RANDOM else
+		"001" when replace_pol.active = POL_FIFO   else
+		"010" when replace_pol.active = POL_DLFU   else
+		"011" when replace_pol.active = POL_LRU    else
+		"100" when replace_pol.active = POL_MRU    else
+		"101";
+		
+	process (clk) begin
+		if rising_edge(clk) then
+			if reset = '1' then
+				ct_cnt <= 0;
+			else
+				ct_cnt <= (ct_cnt + 1) mod sample_rate;
+			end if;
+		end if;
+	end process;
+	
+	const_rate_push <=
+		'0' when enable(0) = '0' else
+		'0' when ct_state = IDLE else
+		'0' when ct_state = FINISH else
+		'0' when ct_state = BG_SYMBOL else
+		'0' when ct_state = AQ_LOCK else
+		'0' when wb_cyc_in = '1' and wb_stb_in = '1' else
+		'1' when ct_cnt = 0 else
+		'0';
+	
+	const_rate_pull <= '1' when ct_state = PUSH1 else '0';
+		
+	process (clk_fr) begin
+		if rising_edge(clk_fr) then
+			if reset = '1' then
+				ct_state <= IDLE;
+			else
+				case ct_state is
+					when IDLE =>
+						if wb_cyc_in = '1' and wb_stb_in = '1' and wb_addr_in = x"004" and state = GATHER then
+							ct_state <= AQ_LOCK;
+						end if;
+					when AQ_LOCK =>
+						if direct_full = '0' then
+							ct_state <= BG_SYMBOL;
+						end if;
+					when BG_SYMBOL => ct_state <= WAIT1;
+					when WAIT1 =>
+						if direct_full = '0' then
+							if wb_cyc_in = '1' and wb_stb_in = '1' and push_disable = '1' then
+								ct_state <= FINISH;
+							elsif push_disable = '0' then
+								ct_state <= PUSH1;
+							end if;
+						end if;
+					when PUSH1 => ct_state <= WAIT1;
+					when FINISH => ct_state <= IDLE;
+				end case;
+			end if;
+		end if;
+	end process;
+	
+	direct_lock_c  <= '0' when ct_state = IDLE else '1';
+	direct_valid_c <=
+		'1' when ct_state = BG_SYMBOL else
+		'1' when ct_state = FINISH else
+		'1' when ct_state = PUSH1 else
+		'0';
+	direct_data_c  <=
+		x"24" when ct_state = BG_SYMBOL else
+		x"24" when ct_state = FINISH else
+		x"52" when const_rate_nibble_out = "000" else
+		x"46" when const_rate_nibble_out = "001" else
+		x"44" when const_rate_nibble_out = "010" else
+		x"4C" when const_rate_nibble_out = "011" else
+		x"4D" when const_rate_nibble_out = "100" else
+		x"4E";
+		
+	ack_c <=
+		'1' when ct_state = FINISH else
+		'1' when ct_state = BG_SYMBOL else
+		'0';
 
 	st: process (clk) begin
 		if rising_edge(clk) then
@@ -152,7 +317,7 @@ begin
 			else
 				case state is
 					when GATHER =>
-						if wb_cyc_in = '1' and wb_stb_in = '1' then
+						if wb_cyc_in = '1' and wb_stb_in = '1' and wb_addr_in = x"000" and ct_state = IDLE then
 							state <= GET_LOCK;
 						end if;
 					when GET_LOCK =>
@@ -190,21 +355,20 @@ begin
 		end if;
 	end process st;
 	
-	wb_ack_out <= '1' when state = FINALIZE else '0';
-	
-	direct_lock  <= '0' when state = GATHER else '1';
-	direct_valid <=
+	direct_lock_s  <= '0' when state = GATHER else '1';
+	direct_valid_s <=
 		'1' when state = DUMP_PHASE1  else
 		'1' when state = FINALIZE     else
 		'1' when state = START_SYMBOL else
 		'0';
-	direct_data  <=
+	direct_data_s  <=
 		ascii_lut(to_integer(unsigned(dump_buffer_a(dump_ctr)))) when state = DUMP_PHASE1  else
 		x"25"                                                    when state = START_SYMBOL else
 		x"25"                                                    when state = FINALIZE     else
 		(others => '0');
 	
-	pull <= '1' when state = GET_NEXT else '0';
+	pull  <= '1' when state = GET_NEXT else '0';
+	ack_s <= '1' when state = FINALIZE else '0';
 
 	time_counter: process(clk) begin
 		if rising_edge(clk) then
@@ -216,7 +380,7 @@ begin
 		end if;
 	end process time_counter;
 	
-	push <= replace_event when enable = '1' else '0';
+	push <= replace_event when enable(1) = '1' else '0';
 	mem_in <=
 		replace_pc(15 downto 2) &
 		std_logic_vector(to_unsigned(time_cnt, 10)) &

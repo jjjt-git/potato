@@ -35,7 +35,12 @@ begin
 			uart1_rxd => uart1_rxd,
 			
 			global_en => '1',
-			cache_crtl => (others => '1')
+			cache_crtl => (others => '1'),
+			trace_enable => '1',
+			
+			RMII_crsdv => '0',
+			RMII_rxer  => '0',
+			RMII_rxd   => (others => '0')
 		);
 
 	clock: process
