@@ -155,22 +155,21 @@ architecture Behavioral of trace_policies is
 	signal ack_c, ack_s : std_logic;
 	signal wb_active: std_logic;
 	
---	attribute mark_debug : string;
---	attribute mark_debug of direct_lock_c     : signal is "true";
---	attribute mark_debug of direct_valid_c    : signal is "true";
---	attribute mark_debug of direct_lock_s     : signal is "true";
---	attribute mark_debug of direct_valid_s    : signal is "true";
---	attribute mark_debug of clk_en            : signal is "true";
---	attribute mark_debug of ct_state          : signal is "true";
---	attribute mark_debug of state             : signal is "true";
---	attribute mark_debug of wb_active         : signal is "true";
---	attribute mark_debug of push_disable      : signal is "true";
+	attribute mark_debug : string;
+	attribute mark_debug of direct_lock_c     : signal is "true";
+	attribute mark_debug of direct_valid_c    : signal is "true";
+	attribute mark_debug of direct_lock_s     : signal is "true";
+	attribute mark_debug of direct_valid_s    : signal is "true";
+	attribute mark_debug of clk_en            : signal is "true";
+	attribute mark_debug of ct_state          : signal is "true";
+	attribute mark_debug of state             : signal is "true";
+	attribute mark_debug of wb_active         : signal is "true";
+	attribute mark_debug of push_disable      : signal is "true";
 begin
 	clk_hlt <= clk;
 	clk_en  <=
 		'1' when reset = '1' else
-		'1' when ct_state /= WAIT1 or ct_state  /= PUSH1 else
-		'0' when clk_disable = '1' else
+		(not clk_disable) when ct_state = WAIT1 or ct_state = PUSH1 else
 		'1';
 	
 	wb_active <= wb_stb_in and wb_cyc_in;
@@ -199,13 +198,12 @@ begin
 		ack_s when state /= GATHER  else
 		'0';
 	
-	xpm_fifo_async_inst : xpm_fifo_async
+	cr_buf : xpm_fifo_sync
 		generic map (
 			READ_MODE => "std",
 			FIFO_READ_LATENCY => 0,
 			FULL_RESET_VALUE => 0,
 			RD_DATA_COUNT_WIDTH => 1,
-			RELATED_CLOCKS => 1,
 			FIFO_WRITE_DEPTH => 16,
 			READ_DATA_WIDTH => 3,
 			WRITE_DATA_WIDTH => 3
@@ -220,11 +218,10 @@ begin
 			injectsbiterr => '0',
 			sleep => '0',
 			
-			rd_clk => clk_fr,
+			wr_clk => clk_fr,
 			dout => const_rate_nibble_out,
 			rd_en => const_rate_pull,
 			
-			wr_clk => clk,
 			din => const_rate_nibble_in,
 			wr_en => const_rate_push
 		);
@@ -239,7 +236,7 @@ begin
 		
 	process (clk) begin
 		if rising_edge(clk) then
-			if reset = '1' then
+			if reset = '1' or ct_state = IDLE or ct_state = FINISH or ct_state = BG_SYMBOL or ct_state = AQ_LOCK then
 				ct_cnt <= 0;
 			else
 				ct_cnt <= (ct_cnt + 1) mod sample_rate;
@@ -254,6 +251,7 @@ begin
 		'0' when ct_state = BG_SYMBOL else
 		'0' when ct_state = AQ_LOCK else
 		'0' when wb_cyc_in = '1' and wb_stb_in = '1' else
+		'0' when clk_disable = '1' else
 		'1' when ct_cnt = 0 else
 		'0';
 	

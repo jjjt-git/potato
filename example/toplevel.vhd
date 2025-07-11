@@ -44,7 +44,7 @@ entity toplevel is
 		DCACHE_MAX_LINE_SIZE   : natural                       := 4;           --! Maximum number of words per data cache line.
 		DCACHE_CACHE_DEPTH     : natural                       := 128;         --! Number of cache lines in the data cache.
 		DCACHE_WAYNESS         : natural                       := 4;
-		DCACHE_HISTORY_LENGTH  : natural                       := 4;
+		DCACHE_HISTORY_LENGTH  : natural                       := 6;
 		
 		TRACE_RATE             : integer                       := 16
 	);
@@ -246,7 +246,7 @@ begin
 	trace_gather  <= replace_event; 
 	tracer: entity work.trace_policies
 		generic map (
-			sample_rate   => TRACE_RATE
+			sample_rate => TRACE_RATE
 		) port map (
 			clk_fr  => system_clk_fr,
 			clk_hlt => system_clk,
