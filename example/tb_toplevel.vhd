@@ -22,10 +22,17 @@ architecture testbench of tb_toplevel is
 
 	signal uart1_txd : std_logic;
 	signal uart1_rxd : std_logic := '1';
+	
+	signal cache_crtl : std_logic_vector(4 downto 0) := "11111";
 
 begin
 
 	uut: entity work.toplevel
+--		generic map (
+--			MEMORY_INIT_FILE     => "/home/jacob/Projects/Studium/Beleg/benchmarks/test.mem",
+--			DCACHE_MAX_LINE_SIZE => 4,
+--			DCACHE_CACHE_DEPTH   => 4
+--		)
 		port map(
 			clk => clk,
 			reset_n => reset_n,
@@ -35,8 +42,8 @@ begin
 			uart1_rxd => uart1_rxd,
 			
 			global_en => '1',
-			cache_crtl => (others => '1'),
-			trace_enable => "01"
+			cache_crtl => cache_crtl,
+			trace_enable => "00"
 		);
 
 	clock: process

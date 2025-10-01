@@ -42,11 +42,11 @@ entity toplevel is
 		DCACHE_DLFU_RATE       : natural                       := 32;          --! Number of accesses to a set before every counter in the set is halfed.
 		
 		DCACHE_MAX_LINE_SIZE   : natural                       := 4;           --! Maximum number of words per data cache line.
-		DCACHE_CACHE_DEPTH     : natural                       := 128;         --! Number of cache lines in the data cache.
+		DCACHE_CACHE_DEPTH     : natural                       := 256;         --! Number of cache lines in the data cache.
 		DCACHE_WAYNESS         : natural                       := 4;
-		DCACHE_HISTORY_LENGTH  : natural                       := 6;
+		DCACHE_HISTORY_LENGTH  : natural                       := 16;
 		
-		TRACE_RATE             : integer                       := 16
+		TRACE_RATE             : integer                       := 64
 	);
 	port(
 		clk     : in  std_logic;
@@ -82,6 +82,8 @@ entity toplevel is
 end entity toplevel;
 
 architecture behaviour of toplevel is
+
+	signal dcache_config : std_logic_vector(31 downto 0);
 
 	-- Reset signals:
 	signal reset : std_logic;
@@ -241,6 +243,21 @@ architecture behaviour of toplevel is
 	
 begin
 	
+	process(global_en, cache_crtl)
+		variable conf : std_logic_vector(31 downto 0);
+	begin
+		conf := (others => '0');
+		if global_en = '1' then
+			conf := std_logic_vector(
+				to_unsigned(DCACHE_MAX_LINE_SIZE, 4) &
+				to_unsigned(DCACHE_WAYNESS, 4) &
+				to_unsigned(DCACHE_HISTORY_LENGTH, 8) &
+				to_unsigned(DCACHE_CACHE_DEPTH, 11)
+			) & cache_crtl;
+		end if;
+		dcache_config <= conf;
+	end process; 
+	
 	trace_enabled <= trace_enable;
 	trace_dumping <= '1' when direct_lock = '1' and direct_valid = '1' and direct_full = '0' else '0';
 	trace_gather  <= replace_event; 
@@ -279,6 +296,7 @@ begin
 			init1 => 1290
 		) port map (
 			clk    => system_clk,
+			reset  => reset,
 			random => dcache_random
 		);
 
@@ -460,6 +478,8 @@ begin
 			wb_ack_in => processor_ack_in,
 			cache_enable => global_en,
 			cache_crtl => cache_crtl,
+			
+			dcache_config => dcache_config,
 			
 			replace_event => replace_event,
 			replace_pol   => replace_pol,

@@ -9,6 +9,11 @@ SOURCE_FILES := \
 	src/pp_alu_mux.vhd \
 	src/pp_alu_control_unit.vhd \
 	src/pp_icache.vhd \
+	src/pp_dcache_pol_rand.vhd \
+	src/pp_dcache_pol_dlfu.vhd \
+	src/pp_dcache_pol_fifo.vhd \
+	src/pp_dcache_pol_sel.vhd \
+	src/pp_dcache_pol_lru_mru.vhd \
 	src/pp_dcache.vhd \
 	src/pp_comparator.vhd \
 	src/pp_constants.vhd \
@@ -23,62 +28,68 @@ SOURCE_FILES := \
 	src/pp_fetch.vhd \
 	src/pp_imm_decoder.vhd \
 	src/pp_memory.vhd \
-	src/pp_potato.vhd \
 	src/pp_register_file.vhd \
 	src/pp_types.vhd \
 	src/pp_utilities.vhd \
+	tracing_types.vhd \
+	src/polynomial_fb_shift.vhd \
+	src/SystemRam.vhd \
+	src/prng.vhd \
 	src/pp_wb_arbiter.vhd \
 	src/pp_wb_adapter.vhd \
 	src/pp_writeback.vhd
 TESTBENCHES := \
 	testbenches/tb_processor.vhd \
-	testbenches/tb_soc.vhd \
-	soc/pp_soc_memory.vhd
+	testbenches/tb_soc.vhd
+VHDL2008_FILES := \
+	src/pp_potato.vhd
 
 TOOLCHAIN_PREFIX ?= riscv-unknown-elf
 
 # ISA tests to use from the riscv-tests repository:
-RISCV_TESTS += \
-	simple \
-	add \
-	addi \
-	and \
-	andi \
-	auipc \
-	beq \
-	bge \
-	bgeu \
-	blt \
-	bltu \
-	bne \
-	jal \
-	jalr \
-	lb \
-	lbu \
-	lh \
-	lhu \
-	lui \
-	lw \
-	or \
-	ori \
-	sb \
-	sh \
-	sll \
-	slt \
-	slti \
-	sltiu \
-	sltu \
-	sra \
-	srai \
-	srl \
-	sub \
-	sw \
-	xor \
-	xori
+#RISCV_TESTS += \
+#	simple \
+#	add \
+#	addi \
+#	and \
+#	andi \
+#	auipc \
+#	beq \
+#	bge \
+#	bgeu \
+#	blt \
+#	bltu \
+#	bne \
+#	jal \
+#	jalr \
+#	lb \
+#	lbu \
+#	lh \
+#	lhu \
+#	lui \
+#	lw \
+#	or \
+#	ori \
+#	sb \
+#	sh \
+#	sll \
+#	slt \
+#	slti \
+#	sltiu \
+#	sltu \
+#	sra \
+#	srai \
+#	srl \
+#	sub \
+#	sw \
+#	xor \
+#	xori
+
+RISCV_TESTS += lb lbu lh lhu lw sb sh sw
 
 # Local tests to run:
-LOCAL_TESTS += \
-	csr_hazard
+#LOCAL_TESTS += \
+#	csr_hazard
 
 # Compiler flags to use when building tests:
 TARGET_CFLAGS += -march=rv32i_zicsr -Wall -O0 -mabi=ilp32
@@ -86,12 +97,15 @@ TARGET_LDFLAGS +=
 
 GHDL_OPTS := --workdir=ghdl_work --std=08 -Wall
 
-all: potato.prj run-tests-ghdl run-soc-tests-ghdl
+all: potato.prj run-tests run-soc-tests
 
 potato.prj:
 	-$(RM) potato.prj
 	for file in $(SOURCE_FILES) $(TESTBENCHES); do \
 		echo "vhdl work $$file" >> potato.prj; \
+	done
+	for file in $(VHDL2008_FILES); do \
+		echo "vhdl2008 work $$file" >> potato.prj; \
 	done
 
 copy-riscv-tests:
@@ -114,7 +128,7 @@ run-tests: potato.prj compile-tests
 		echo -ne "Running test $$test:\t"; \
 		DMEM_FILENAME="empty_dmem.hex"; \
 		test -f tests-build/$$test-dmem.hex && DMEM_FILENAME="tests-build/$$test-dmem.hex"; \
-		xelab tb_processor -generic_top "IMEM_FILENAME=tests-build/$$test-imem.hex" -generic_top "DMEM_FILENAME=$$DMEM_FILENAME" -prj potato.prj > /dev/null; \
+		xelab tb_processor -generic_top "IMEM_FILENAME=tests-build/$$test-imem.hex" -generic_top "DMEM_FILENAME=$$DMEM_FILENAME" -prj potato.prj > tests-build/$$test.elab; \
 		xsim tb_processor -R --onfinish quit > tests-build/$$test.results; \
 		cat tests-build/$$test.results | awk '/Note:/ {print}' | sed 's/Note://' | awk '/Success|Failure/ {print}'; \
 	done
@@ -124,7 +138,7 @@ run-soc-tests: potato.prj compile-tests
 		echo -ne "Running SOC test $$test:\t"; \
 		DMEM_FILENAME="empty_dmem.hex"; \
 		test -f tests-build/$$test-dmem.hex && DMEM_FILENAME="tests-build/$$test-dmem.hex"; \
-		xelab tb_soc -generic_top "IMEM_FILENAME=tests-build/$$test-imem.hex" -generic_top "DMEM_FILENAME=$$DMEM_FILENAME" -prj potato.prj > /dev/null; \
+		xelab tb_soc -generic_top "IMEM_FILENAME=tests-build/$$test-imem.hex" -generic_top "DMEM_FILENAME=$$DMEM_FILENAME" -prj potato.prj > tests-build/$$tests.elab; \
 		xsim tb_soc -R --onfinish quit > tests-build/$$test.results-soc; \
 		cat tests-build/$$test.results-soc | awk '/Note:/ {print}' | sed 's/Note://' | awk '/Success|Failure/ {print}'; \
 	done

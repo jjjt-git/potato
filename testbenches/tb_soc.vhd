@@ -19,8 +19,9 @@ entity tb_soc is
 		DMEM_SIZE : natural := 4096; --! Size of the data memory in bytes.
 		RESET_ADDRESS   : std_logic_vector := x"00000100"; --! Processor reset address
 		IMEM_START_ADDR : std_logic_vector := x"00000100"; --! Instruction memory start address
-		IMEM_FILENAME   : string := "imem_testfile.hex"; --! File containing the contents of instruction memory.
-		DMEM_FILENAME   : string := "dmem_testfile.hex"  --! File containing the contents of data memory.
+		IMEM_FILENAME   : string := "/home/jacob/Projects/Studium/ProfilProjekt/potato/tests-build/sh-imem.hex"; --! File containing the contents of instruction memory.
+		DMEM_FILENAME   : string := "/home/jacob/Projects/Studium/ProfilProjekt/potato/tests-build/sh-dmem.hex"; --! File containing the contents of data memory.
+		DCACHE_ENABLE   : boolean := true
 	);
 end entity tb_soc;
 
@@ -91,11 +92,24 @@ architecture testbench of tb_soc is
 	signal initialized  : boolean := false;
 	signal simulation_finished : boolean := false;
 
+	signal random : Std_logic_vector(7 downto 0);
+	
 begin
+
+	rng: entity work.prng
+		generic map (
+			WOUT => 8,
+			init0 => 487,
+			init1 => 1290
+		) port map (
+			clk    => clk,
+			random => random
+		);
 
 	processor: entity work.pp_potato
 		generic map(
-			RESET_ADDRESS => RESET_ADDRESS
+			RESET_ADDRESS => RESET_ADDRESS,
+			DCACHE_ENABLE => DCACHE_ENABLE
 		) port map(
 			clk => clk,
 			reset => processor_reset,
@@ -108,7 +122,12 @@ begin
 			wb_we_out => p_we_out,
 			wb_dat_out => p_dat_out,
 			wb_dat_in => p_dat_in,
-			wb_ack_in => p_ack_in
+			wb_ack_in => p_ack_in,
+			
+			cache_enable => '1',
+			cache_crtl   => (others => '1'),
+			
+			random => random
 		);
 
 	imem: entity work.pp_soc_memory

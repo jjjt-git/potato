@@ -39,6 +39,9 @@ entity pp_core is
 		dmem_read_ack  : in  std_logic;                      --! Data memory read acknowledge
 		dmem_write_req : out std_logic;                      --! Data memory write request
 		dmem_write_ack : in  std_logic;                      --! Data memory write acknowledge
+		
+		dcache_miss, dcache_r_miss : in std_logic;
+		dcache_config              : in std_logic_vector(31 downto 0);
 
 		-- Test interface:
 		test_context_out : out test_context;                 --! Test context output.
@@ -49,11 +52,7 @@ entity pp_core is
 		-- External interrupt input:
 		irq : in std_logic_vector(7 downto 0); --! IRQ inputs.
 		
-		replace_pc : out std_logic_vector(31 downto 0);
-
-		-- dcache control
-		dcache_inval : out std_logic;
-		dcache_polcrtl : out std_logic_vector(1 downto 0)
+		replace_pc : out std_logic_vector(31 downto 0)
 	);
 end entity pp_core;
 
@@ -241,8 +240,9 @@ begin
 				software_interrupt_out => software_interrupt,
 				timer_interrupt_out => timer_interrupt,
 				
-				invalidate => dcache_inval,
-				policy_select => dcache_polcrtl
+				dcache_miss   => dcache_miss,
+				dcache_r_miss => dcache_r_miss,
+				dcache_config => dcache_config
 			);
 
 	csr_read_address <= id_csr_address when stall_ex = '0' else csr_read_address_p;

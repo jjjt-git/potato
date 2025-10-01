@@ -43,6 +43,9 @@ architecture behaviour of pp_fetch is
 	signal pc           : std_logic_vector(31 downto 0);
 	signal pc_next      : std_logic_vector(31 downto 0);
 	signal cancel_fetch : std_logic;
+	
+	attribute MARK_DEBUG : boolean;
+	attribute MARK_DEBUG of pc : signal is true;
 begin
 
 	imem_address <= pc_next when cancel_fetch = '0' else pc;

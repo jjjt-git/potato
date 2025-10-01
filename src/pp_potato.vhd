@@ -9,6 +9,10 @@ use work.pp_types.all;
 use work.pp_utilities.all;
 use work.tracing_types.all;
 
+-- debug
+use ieee.numeric_std.all;
+use std.textio.all;
+
 --! @brief The Potato Processor.
 --! This file provides a Wishbone-compatible interface to the Potato processor.
 entity pp_potato is
@@ -61,6 +65,8 @@ entity pp_potato is
 		cache_enable : in std_logic;
 		cache_crtl : in  std_logic_vector(4 downto 0);
 		
+		dcache_config : in std_logic_vector(31 downto 0);
+		
 		replace_event : out std_logic;
 		replace_pc    : out std_logic_vector(31 downto 0);
 		replace_pol   : out policy_t;
@@ -100,8 +106,36 @@ architecture behaviour of pp_potato is
 	
 	-- interrupt signals
 	signal irq_buffer : std_logic_vector(7 downto 0);
+	
+	-- perf counter signals
+	signal dcache_miss, dcache_r_miss : std_logic;
 
 begin
+
+	process (clk)
+		variable addr, wdata : std_logic_vector(31 downto 0);
+		variable size : string(1 to 1);
+	begin
+		if rising_edge(clk) then
+			if dmem_read_req = '1' or dmem_write_req = '1' then
+				addr := dmem_address;
+				
+				wdata := dmem_data_out;
+				
+				case dmem_data_size is
+					when b"01"  => size := "B";
+					when b"10"  => size := "H";
+					when others => size := "W";
+				end case;
+			end if;
+			if dmem_read_ack = '1' then
+				report "R " & size & " 0x" & to_hstring(unsigned(addr)) & " = 0x" & to_hstring(unsigned(dmem_data_in));
+			end if;
+			if dmem_write_ack = '1' then
+				report "W " & size & " 0x" & to_hstring(unsigned(addr)) & " = 0x" & to_hstring(unsigned(wdata));
+			end if;
+		end if;
+	end process; 
 
 	processor: entity work.pp_core
 		generic map(
@@ -117,10 +151,12 @@ begin
 			
 			debug_vector => debug_vector,
 			
-			dcache_inval => dcache_inval,
-			dcache_polcrtl => dcache_polcrtl,
-			
 			replace_pc => replace_pc,
+			
+			dcache_miss   => dcache_miss,
+			dcache_r_miss => dcache_r_miss,
+			
+			dcache_config => dcache_config,
 			
 			dmem_address => dmem_address,
 			dmem_data_in => dmem_data_in,
@@ -219,6 +255,9 @@ begin
 				clk           => clk,
 				reset         => reset,
 				
+				cache_miss    => dcache_miss,
+				cache_r_miss  => dcache_r_miss,
+				
 				mem_address   => dmem_address,
 				mem_data_in   => dmem_data_out,
 				mem_data_out  => dmem_data_in,
@@ -243,6 +282,9 @@ begin
 
 	dcache_disabled: if not DCACHE_ENABLE
 	generate
+		dcache_miss   <= '0';
+		dcache_r_miss <= '0';
+		
 		dmem_if: entity work.pp_wb_adapter
 			port map(
 				clk => clk,

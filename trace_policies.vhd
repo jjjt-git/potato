@@ -155,16 +155,16 @@ architecture Behavioral of trace_policies is
 	signal ack_c, ack_s : std_logic;
 	signal wb_active: std_logic;
 	
-	attribute mark_debug : string;
-	attribute mark_debug of direct_lock_c     : signal is "true";
-	attribute mark_debug of direct_valid_c    : signal is "true";
-	attribute mark_debug of direct_lock_s     : signal is "true";
-	attribute mark_debug of direct_valid_s    : signal is "true";
-	attribute mark_debug of clk_en            : signal is "true";
-	attribute mark_debug of ct_state          : signal is "true";
-	attribute mark_debug of state             : signal is "true";
-	attribute mark_debug of wb_active         : signal is "true";
-	attribute mark_debug of push_disable      : signal is "true";
+--	attribute mark_debug : string;
+--	attribute mark_debug of direct_lock_c     : signal is "true";
+--	attribute mark_debug of direct_valid_c    : signal is "true";
+--	attribute mark_debug of direct_lock_s     : signal is "true";
+--	attribute mark_debug of direct_valid_s    : signal is "true";
+--	attribute mark_debug of clk_en            : signal is "true";
+--	attribute mark_debug of ct_state          : signal is "true";
+--	attribute mark_debug of state             : signal is "true";
+--	attribute mark_debug of wb_active         : signal is "true";
+--	attribute mark_debug of push_disable      : signal is "true";
 begin
 	clk_hlt <= clk;
 	clk_en  <=

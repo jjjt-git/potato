@@ -47,9 +47,8 @@ entity pp_csr_unit is
 		software_interrupt_out : out std_logic;
 		timer_interrupt_out    : out std_logic;
 		
-		-- Cache control
-		policy_select : out std_logic_vector(1 downto 0);
-		invalidate : out std_logic;
+		dcache_miss, dcache_r_miss : in std_logic;
+		dcache_config : in std_logic_vector(31 downto 0);
 
 		-- Registers needed for exception handling, always read:
 		mie_out         : out std_logic_vector(31 downto 0);
@@ -87,18 +86,14 @@ architecture behaviour of pp_csr_unit is
 
 	-- Test and debug register:
 	signal test_register : test_context;
-	
-	-- cache
-	signal cache_control : std_logic_vector(2 downto 0);
 
 	-- Interrupt signals:
 	signal timer_interrupt    : std_logic;
 	signal software_interrupt : std_logic;
+	
+	signal dcache_misses, dcache_r_misses : unsigned(31 downto 0);
 
 begin
-
-	policy_select <= cache_control(2 downto 1);
-	invalidate <= cache_control(0);
 
 	-- Interrupt signals:
 	software_interrupt_out <= software_interrupt;
@@ -169,10 +164,11 @@ begin
 				mtvec <= (others => '0');
 				mepc <= (others => '0');
 				mie <= (others => '0');
-				cache_control <= (others => '0');
 				ie <= '0';
 				ie1 <= '0';
 				test_register <= (TEST_IDLE, (others => '0'));
+				dcache_misses <= (others => '0');
+				dcache_r_misses <= (others => '0');
 			else
 				if exception_context_write = '1' then
 					ie <= exception_context.ie;
@@ -181,8 +177,16 @@ begin
 					mbadaddr <= exception_context.badaddr;
 				end if;
 				
-				if write_mode = CSR_WRITE_NONE or (write_address /= CSR_CACHE) then
-					cache_control(0) <= '0';
+				if not (write_mode /= CSR_WRITE_NONE and write_address = CSR_DCACHE_MISS) then
+					if dcache_miss = '1' then
+						dcache_misses <= dcache_misses + 1;
+					end if;
+				end if;
+				
+				if not (write_mode /= CSR_WRITE_NONE and write_address = CSR_DCACHE_R_MISS) then
+					if dcache_r_miss = '1' then
+						dcache_r_misses <= dcache_r_misses + 1;
+					end if;
 				end if;
 
 				if write_mode /= CSR_WRITE_NONE then
@@ -206,8 +210,10 @@ begin
 							software_interrupt <= write_data_in(CSR_MIP_MSIP);
 						when CSR_TEST => -- Test and debug register:
 							test_register <= std_logic_to_test_context(write_data_in);
-						when CSR_CACHE =>
-							cache_control <= write_data_in(2 downto 0);
+						when CSR_DCACHE_MISS =>
+							dcache_misses <= (others => '0');
+						when CSR_DCACHE_R_MISS =>
+							dcache_r_misses <= (others => '0');
 						when others =>
 							-- Ignore writes to invalid or read-only registers
 					end case;
@@ -286,8 +292,13 @@ begin
 					when CSR_INSTRETH =>
 						read_data_out <= counter_instret(63 downto 32);
 						
+					when CSR_DCACHE_MISS =>
+						read_data_out <= std_logic_vector(dcache_misses);
+					when CSR_DCACHE_R_MISS =>
+						read_data_out <= std_logic_vector(dcache_r_misses);
+						
 					when CSR_CACHE =>
-						read_data_out <= std_logic_vector(resize(unsigned(cache_control), read_data_out'length));
+						read_data_out <= dcache_config;
 
 					-- Potato extensions:
 					when CSR_TEST =>

@@ -1,67 +1,75 @@
 @startuml
 hide empty description
 
-[*] --> IDLE
-IDLE --> ADDR_DECODE : mem_read_req | mem_write_req
-
-note on link
-    pseudo-transition
-end note
-
-ADDR_DECODE --> PASS_THROUGH : !in_segment
-PASS_THROUGH --> PASS_THROUGH_RESPOND
-PASS_THROUGH_RESPOND --> IDLE
-
-ADDR_DECODE --> WRITE : mem_write_req & in_segment
-state WRITE {
-    [*] --> PASS_THROUGH : !cache_hit
+state CACHE_CRTL {
+    [*] -[dashed]-> IDLE
+    IDLE --> LOOKUP : in_segment & bus_idle
     note on link
-        pseudo-transition
+        fetch entry from array
     end note
-    [*] --> WRITE_UPDATE  : cache_hit
+    IDLE --> PASS_THROUGH : !in_segment & bus_idle
+
+    state PASS_THROUGH_RESPOND #line.dashed
+
+    PASS_THROUGH --> PASS_THROUGH_RESPOND : bus_idle
+    PASS_THROUGH_RESPOND -up[dashed]-> IDLE
+
+    LOOKUP -left-> WRITE : mem_write_req
+    WRITE -[dashed]-> PASS_THROUGH : !hit
+    WRITE -[dashed]-> WRITE_UPDATE : hit
+
+    state WRITE #line.dashed
+    state WRITE_UPDATE #line.dashed
+
+    WRITE_UPDATE -[dashed]-> WRITE_RESPOND
     note on link
-        pseudo-transition
+        update local entry
     end note
-    WRITE_UPDATE --> WRITE_RESPOND
+    WRITE_RESPOND --> IDLE
     note on link
-        pseudo-transition
+        write local to array
     end note
-    WRITE_RESPOND --> [*]
+
+    LOOKUP -right-> READ : mem_read_req
+    READ -[dashed]-> READ_RESPOND : hit
+    READ -right[dashed]-> REFILL : !hit
+
+    state READ #line.dashed
+
+    READ_RESPOND --> IDLE
+
+    REFILL_RESPOND -[dashed]-> REPLACE
+    WRITE_BACK --> IDLE
+
+    REFILL --> REFILL_RESPOND : first_word_read
+
+    state REFILL_RESPOND #line.dashed
+    state UPDATE_REFILL #line.dashed
+
+    REPLACE --> UPDATE_REFILL : pol_ready & block_ready
+    note on link
+        update local entry
+    end note
+    UPDATE_REFILL -[dashed]-> IDLE : !need_wb
+    note on link
+        write local to array
+    end note
+    UPDATE_REFILL -[dashed]-> WRITE_BACK : need_wb
+    note on link
+        write local to array
+    end note
 }
-WRITE --> IDLE
-note on link
-    pseudo-transition
-end note
 
-ADDR_DECODE --> READ : mem_read_req & in_segment
-note on link
-    priority if mem_read_req & mem_write_req
-end note
-state READ {
-    [*] --> READ_RESPOND : cache_hit
-    note on link
-        pseudo-transition
-    end note
-    [*] --> REFILL : !cache_hit
-    note on link
-        pseudo-transition
-    end note
-    state REFILL {
-        [*] --> FETCH
-        FETCH --> [*]
-        ||
-        [*] --> GET_CANDIDATE
-        GET_CANDIDATE --> [*]
-    }
-    REFILL --> REPLACE
-    REPLACE --> READ_RESPOND
-    READ_RESPOND --> [*] : !need_write_back
-    READ_RESPOND --> WRITE_BACK : need_write_back
-    WRITE_BACK --> [*]
+state BUS_CRTL {
+    state WAIT_CMD as "IDLE"
+    state PUSH as "WRITE"
+    state PULL as "READ"
+
+    [*] --> WAIT_CMD
+    WAIT_CMD --> PUSH : cmd_write
+    WAIT_CMD --> PULL : cmd_read
+    PUSH --> WAIT_CMD : finished
+    PULL --> WAIT_CMD : finished
 }
-READ --> IDLE
-note on link
-    pseudo-transition
-end note
 
 @enduml
