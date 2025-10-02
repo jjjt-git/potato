@@ -112,31 +112,6 @@ architecture behaviour of pp_potato is
 
 begin
 
-	process (clk)
-		variable addr, wdata : std_logic_vector(31 downto 0);
-		variable size : string(1 to 1);
-	begin
-		if rising_edge(clk) then
-			if dmem_read_req = '1' or dmem_write_req = '1' then
-				addr := dmem_address;
-				
-				wdata := dmem_data_out;
-				
-				case dmem_data_size is
-					when b"01"  => size := "B";
-					when b"10"  => size := "H";
-					when others => size := "W";
-				end case;
-			end if;
-			if dmem_read_ack = '1' then
-				report "R " & size & " 0x" & to_hstring(unsigned(addr)) & " = 0x" & to_hstring(unsigned(dmem_data_in));
-			end if;
-			if dmem_write_ack = '1' then
-				report "W " & size & " 0x" & to_hstring(unsigned(addr)) & " = 0x" & to_hstring(unsigned(wdata));
-			end if;
-		end if;
-	end process; 
-
 	processor: entity work.pp_core
 		generic map(
 			PROCESSOR_ID => PROCESSOR_ID,

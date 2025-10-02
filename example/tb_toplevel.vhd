@@ -28,11 +28,11 @@ architecture testbench of tb_toplevel is
 begin
 
 	uut: entity work.toplevel
---		generic map (
---			MEMORY_INIT_FILE     => "/home/jacob/Projects/Studium/Beleg/benchmarks/test.mem",
---			DCACHE_MAX_LINE_SIZE => 4,
---			DCACHE_CACHE_DEPTH   => 4
---		)
+		generic map (
+			MEMORY_INIT_FILE     => "/home/jacob/Projects/Studium/Beleg/benchmarks/test.mem",
+			DCACHE_MAX_LINE_SIZE => 8,
+			DCACHE_CACHE_DEPTH   => 4
+		)
 		port map(
 			clk => clk,
 			reset_n => reset_n,

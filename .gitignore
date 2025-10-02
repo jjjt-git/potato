@@ -10,7 +10,10 @@ develop/
 *.elf
 *.bin
 *.coe
+*.hex
+*.mem
 *.map
+*.d
 
 # LaTeX Files:
 *.aux

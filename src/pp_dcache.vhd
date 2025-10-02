@@ -66,7 +66,7 @@ entity pp_dcache is
 end entity pp_dcache;
 
 architecture behaviour of pp_dcache is
-	constant enable_debug : boolean := true;
+	constant enable_debug : boolean := false;
 
 	-- address splitting constants
 	constant boffset_bits : integer := 2;
@@ -278,8 +278,9 @@ begin
 		cache_crtl, bus_crtl,
 		mem_read_req, mem_write_req,
 		in_segment, resetting, hit,
-		latch_offset,
-		current_entry
+		latch_offset, addr_offset,
+		current_entry,
+		pol_victim
 	)
 		variable c_en, c_we : boolean;
 		variable b_w_start, b_w_end : offset_t;
