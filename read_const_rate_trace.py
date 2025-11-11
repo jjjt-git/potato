@@ -1,3 +1,5 @@
+#!/usr/bin/python
+
 import sys
 import ctypes as ct
 
